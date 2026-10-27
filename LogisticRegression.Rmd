@@ -1,30 +1,44 @@
 ---
-title: "LogisticRegression"
-author: "Varun Talluri"
-date: "2026-10-27"
+title: "NFL Draft Predictor"
+author: "Sean Gretzinger"
+date: "2026-10-22"
 output: html_document
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+library(nflreadr)
+
+DraftData <- load_combine(seasons = 2000:2025)
+DraftData <- as.data.frame(DraftData)
+
+#Now we have to switch the nas from Draft_round to 0 to say the didnt get drafted, and put the rest of the rounds 1-7 as a 1 for binary
+DraftData$Drafted <- ifelse(is.na(DraftData$draft_round), 0, 1)
+
+#Our height is currently in a weird format, we are going to change it to inches for a better prediction
+DraftData$InchHeight <- as.numeric(sub("->*", "", DraftData$ht)) * 12 + as.numeric(sub(",*-", "", DraftData$ht))
+
+#The positions can be factored down 
+DraftData$pos <- as.factor(DraftData$pos)
+#Now we have a better height we can drop the original
+DraftData$ht <- NULL
+
+#After running the model originally, we saw that Kickers, Punters, and other specialists are almost automatically drafted if they go to the combine
+DraftData <- DraftData[!(DraftData$pos %in% c("K", "P", "LS")), ]
+#Additionally, we are going to factorize the draft year, so we no longer need the season 
+DraftData$season <- NULL
+#We can make the college teams that they get drafted from a factor as well, and additionally, we can do the same with the team they get drafted to 
+DraftData$draft_team <- as.factor(DraftData$draft_team)
+DraftData$school <- as.factor(DraftData$school)
+#With Draft Year as a factor, we can eliminate the need for season
+DraftData$draft_year <- as.factor(DraftData$draft_year)
+
+#Nowe we need to run the regression model 
+logit.model <- glm(Drafted ~ InchHeight + wt + forty + vertical + pos, data = DraftData, family = "binomial")
+
 ```
 
-## R Markdown
-
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
-
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
-
-```{r cars}
-summary(cars)
+```{r}
+summary(logit.model)
 ```
 
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
-```
-
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
