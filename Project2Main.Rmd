@@ -1,6 +1,6 @@
 ---
 title: "First File"
-author: "Varun Talluri, Ana Liu, Kasper"
+author: "Varun Talluri, Ana Liu, Kasper Brixen"
 date: "2026-10-27"
 output: html_document
 ---
