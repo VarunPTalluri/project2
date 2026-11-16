@@ -1,0 +1,184 @@
+---
+title: "NFL Draft Predictor: Using Combine Data to Prioritize Scouting"
+author: "Group Project"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(caret)
+
+# This report reads RDS objects saved by Files 01–11; no models are retrained.
+DraftRaw <- readRDS("objects/raw_labeled.rds")
+DraftData <- readRDS("objects/cleaned.rds")
+measures <- readRDS("objects/measure_names.rds")
+removed_specialists <- readRDS("objects/removed_specialists.rds")
+train_data <- readRDS("objects/train_data.rds")
+test_data <- readRDS("objects/test_data.rds")
+train_y <- readRDS("objects/train_y.rds")
+test_y <- readRDS("objects/test_y.rds")
+prelim_model <- readRDS("objects/prelim_model.rds")
+logit_cv <- readRDS("objects/logit_cv.rds")
+knn_cv <- readRDS("objects/knn_cv.rds")
+svm_cv <- readRDS("objects/svm_cv.rds")
+ann_cv <- readRDS("objects/ann_cv.rds")
+tree_cv <- readRDS("objects/tree_cv.rds")
+rf_cv <- readRDS("objects/rf_cv.rds")
+metrics <- readRDS("objects/metrics.rds")
+all_confusions <- readRDS("objects/all_confusions.rds")
+scouting_table <- readRDS("objects/scouting_table.rds")
+capacity_table <- readRDS("objects/capacity_table.rds")
+review_slots <- readRDS("objects/review_slots.rds")
+expected_random <- readRDS("objects/expected_random.rds")
+full_review_cost <- readRDS("objects/full_review_cost.rds")
+shortlist_cost <- readRDS("objects/shortlist_cost.rds")
+cost_per_review <- readRDS("objects/cost_per_review.rds")
+
+# Results tables are derived from the existing saved model objects.
+best_kappa <- which.max(metrics$Kappa[1:7])
+best_scouting <- which.max(scouting_table$DraftedOnShortlist)
+majority_row <- nrow(metrics)
+```
+
+# 1. Introduction and Business Question
+
+The NFL Draft requires scouting departments to evaluate more prospects than can always receive the same level of film review. NFL Scouting Combine measurements could help prioritize which players deserve deeper attention before the draft. Rather than predict whether someone will become a successful NFL player, our narrower question is:
+
+**Can we use pre-draft combine measurements to identify players who are more likely to be drafted, and make the allocation of scouting time more efficient?**
+
+The audience is a scouting or football operations department. We focus on the decisions that can be made **before** draft selections are announced. The model would supplement scouts' judgment, not replace film evaluation or predict professional success.
+
+# 2. Dataset and Initial Exploration
+
+We use combine data for **2000–2025** from `nflreadr::load_combine()`, sourced from Pro Football Reference. The data contain player positions, college, physical measurements, combine tests, and draft outcomes. After excluding specialist roles (K, P, LS), the cleaned dataset contains **`r nrow(DraftData)`** combine attendees, of whom **`r sum(DraftData$Drafted == 1)`** (`r round(100 * mean(DraftData$Drafted == 1), 1)`%) were recorded as drafted.
+
+I excluded specialists because the relevance of particular combine drills and the scouting process differ substantially across those roles. This removes `r removed_specialists` records. I kept eight pre-draft measurements and grouped positions into broader roles to avoid a large number of small categories.
+
+```{r overview}
+# Basic checks using the saved cleaned dataset, not a fresh download.
+str(DraftData)
+print(table(DraftData$Drafted))
+print(round(colMeans(is.na(DraftData[, measures])) * 100, 1))
+```
+
+## Descriptive Visualizations
+
+```{r plots, fig.width=10, fig.height=4.5}
+# Draft rates and counts help distinguish a large group from a high-rate small group.
+position_rate <- tapply(DraftData$Drafted, DraftData$pos_group, mean, na.rm = TRUE)
+position_count <- table(DraftData$pos_group)
+par(mfrow = c(1, 2), mar = c(8, 4, 3, 1))
+barplot(100 * position_rate, las = 2, ylim = c(0, 100),
+        ylab = "Drafted (%)", main = "Observed draft rate by position")
+barplot(position_count, las = 2, ylab = "Combine attendees",
+        main = "Sample size by position")
+par(mfrow = c(1, 1))
+```
+
+The highest observed draft rate is for **`r names(which.max(position_rate))`** (`r round(100 * max(position_rate), 1)`%), while **`r names(which.max(position_count))`** has the largest number of attendees (`r max(position_count)`). Because position groups differ in size, rates need to be interpreted alongside counts. These associations do not establish that playing a given position causes draft selection.
+
+# 3. Data Cleaning and Design Choices
+
+File 01 created `Drafted = 1` for players with a recorded draft round and `0` for others. It converted the height field (for example, 6-2) to **inches**, grouped similar positions, and removed specialist positions. Unlike the starting code, I **did not use `draft_team`, `draft_round`, `draft_ovr`, or `draft_year` as predictors**: these are known after the outcome and would leak the answer. I also excluded `player_name`, player IDs, and `school` from the predictive inputs, as they are identifiers or very high-cardinality fields that would complicate this first analysis.
+
+Not everyone completes every drill, so dropping all incomplete records would discard information. File 01 also adds a missing-test indicator for each measurement and replaces missing measurements with the **historical training median**. `model.matrix()` makes numeric dummy variables for positions, and training-based normalization is used for KNN, SVM, and ANN. Tree models retain the position factor.
+
+```{r missingness}
+# How many measurements were originally missing before imputation?
+missing_pct <- 100 * colMeans(is.na(DraftData[, measures]))
+knitr::kable(data.frame(Measurement = names(missing_pct),
+                        MissingPercent = round(missing_pct, 1)))
+```
+
+# 4. Train/Test Design and Baseline Regression
+
+To test the business question as it would arise in practice, we trained on combine years **2000–2021** and held out **2022–2025**. This keeps future draft years separate from the historical data used for training and cross-validation. The training data contain `r nrow(train_data)` players and the test set contains `r nrow(test_data)`.
+
+The baseline Logistic Regression uses only **position, height, and weight**. This gives an interpretable starting point before adding combine drills and comparing other models. It is trained on historical observations; future holdout performance is evaluated only after model selection.
+
+```{r baseline-regression}
+# File 02 fitted this baseline model; display its estimates without refitting.
+summary(prelim_model)
+```
+
+# 5. Individual Model Development and Improvement
+
+I used models covered in class: Logistic Regression, KNN, SVM, ANN, Decision Tree, and Random Forest. Where applicable, the tuning uses **5-fold cross-validation on historical training players**, following the class `caret::train()` example. ANN uses three folds because training it repeatedly is slower. **Kappa** determines the selected setting, with Accuracy as a secondary consideration. None of the 2022–2025 test outcomes were used to select settings.
+
+| Model | Starting method | Improvement attempted |
+|:--|:--|:--|
+| Logistic Regression | Height, weight, position | Add combine drills and missingness indicators |
+| KNN | 5 neighbors | Compare 5, 11, 21, and 31 neighbors |
+| SVM | Linear kernel | Try a radial kernel |
+| ANN | 1 hidden neuron | Compare 2 hidden neurons |
+| Decision Tree | Small classification tree | Compare pruning complexity (`cp`) |
+| Random Forest | Default `mtry` | Compare alternative numbers of candidate features |
+
+```{r tuning}
+# Each table was generated within the matching model file, without test-set tuning.
+cat("\nLogistic Regression — baseline versus expanded:\n"); print(logit_cv)
+cat("\nKNN — number of neighbors:\n"); print(knn_cv)
+cat("\nSVM — linear versus radial:\n"); print(svm_cv)
+cat("\nANN — hidden neurons:\n"); print(ann_cv)
+cat("\nDecision Tree — complexity parameter:\n"); print(tree_cv)
+cat("\nRandom Forest — mtry:\n"); print(rf_cv)
+```
+
+In addition, File 09 creates a **simple probability blend** by averaging the six model probabilities. It adds a transparent combination benchmark without requiring a second-level model to be trained on the held-out players.
+
+# 6. Holdout Predictions and Confusion Matrices
+
+The models predict **the same future-year test players**, so their results are directly comparable. Accuracy is the proportion classified correctly; Kappa measures agreement after accounting for chance; sensitivity measures the share of drafted players correctly identified, while specificity measures the share of undrafted players correctly identified. Precision is relevant for the scouting shortlist: of those predicted drafted, how many actually were drafted?
+
+```{r compare-models}
+# Metrics were computed once in File 10 on the 2022–2025 holdout.
+knitr::kable(metrics, digits = 3)
+```
+
+```{r confusion-matrices}
+# Show full TP/TN/FP/FN information, not just a single Accuracy score.
+for (nm in names(all_confusions)) {
+  cat("\n", nm, "\n")
+  print(all_confusions[[nm]])
+}
+```
+
+The highest holdout Kappa among the seven predictive approaches is **`r metrics$Model[best_kappa]`**, with Kappa **`r round(metrics$Kappa[best_kappa], 3)`** and Accuracy **`r round(100 * metrics$Accuracy[best_kappa], 1)`%**. The always-predict-majority baseline achieved **`r round(100 * metrics$Accuracy[majority_row], 1)`% Accuracy**. I would not automatically prefer a more complicated model unless it also improves practical screening performance.
+
+# 7. Business Interpretation and Scouting Capacity
+
+Prediction alone does not tell a scouting manager which players to review. I assume the department can afford detailed film review for only **25% of the test prospects**. Each model ranks prospects by its estimated probability of being drafted, and we count how many ultimately drafted players are present in its top 25%.
+
+```{r shortlist}
+# All models get the same number of review slots; only the ordering differs.
+knitr::kable(scouting_table, digits = 3)
+```
+
+The best model for identifying drafted prospects within this capacity is **`r scouting_table$Model[best_scouting]`**: it captured **`r scouting_table$DraftedOnShortlist[best_scouting]`** eventual drafted players among `r review_slots` reviewed. A random shortlist of the same size would contain **`r round(expected_random, 1)` drafted players on average**. The model's shortlist lift relative to random is **`r round(scouting_table$LiftOverRandom[best_scouting], 2)` times**.
+
+## Financial Assumptions and Sensitivity
+
+To translate the results into a resource decision, suppose a detailed review requires **3 staff hours at $65 per hour**, or **$`r cost_per_review` per prospect**. Reviewing every prospect in the holdout would cost **$`r format(full_review_cost, big.mark = ",")`**, while reviewing only the top 25% would cost **$`r format(shortlist_cost, big.mark = ",")`** under any model. The actual advantage of modeling over a random shortlist is **which prospects are found within the same fixed budget**, not additional dollar savings from choosing one model over another.
+
+```{r capacity-sensitivity}
+# Evaluate 10%, 25%, and 40% scouting capacity without retraining.
+knitr::kable(capacity_table, digits = 1)
+```
+
+These estimates are illustrative, not observed NFL scouting expenses. Being drafted is not a measure of whether a player will become productive in the NFL, and the exercise does not establish the financial value of a particular prospect.
+
+# 8. Conclusion and Recommendation
+
+Using only pre-draft combine measurements, we developed six individual classifiers and a simple probability blend. On the untouched future-year holdout, **`r metrics$Model[best_kappa]`** had the highest Kappa, while **`r scouting_table$Model[best_scouting]`** found the most eventual drafted players within our 25% review budget. `r if (metrics$Model[best_kappa] == scouting_table$Model[best_scouting]) "Both criteria favor the same approach in this sample." else "The two criteria favor different approaches, which matters because overall prediction quality and prioritizing a limited scouting budget are different objectives."`
+
+My recommendation is to use **`r scouting_table$Model[best_scouting]` as a screening aid**, and then allow scouts to apply film evaluation, medical context, interviews, and team-specific needs before making any football decision. Next, I would compare the process with the current scouting workflow on a new draft class, monitor performance by position, and revisit the target if the real goal is NFL career value rather than draft selection. The current data cover **combine invitees**, not all college football players, so conclusions should not be generalized to every eligible prospect.
+
+# Data Source
+
+- `nflreadr::load_combine()` / Pro Football Reference combine dataset: https://nflreadr.nflverse.com/reference/load_combine.html
+- Field dictionary: https://nflreadr.nflverse.com/articles/dictionary_combine.html
+
+*Files 01–12 contain the reusable cleaning, preprocessing, models, cross-validation, predictions, and business calculations. `main.Rmd` only loads their saved `.rds` results to prepare this report.*

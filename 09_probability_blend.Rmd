@@ -1,0 +1,44 @@
+---
+title: "NFL Draft Predictor | Model 7 — Simple Probability Blend"
+output: html_document
+---
+
+# Model 7 — Simple Probability Blend
+
+As an optional combination of models, I take the mean of the six predicted draft probabilities. This follows the class idea of combining individual predictions without fitting an additional model or tuning on the future holdout. It is a transparent benchmark, **not a claim that blending must improve performance**.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+dir.create("objects", showWarnings = FALSE)
+dir.create("data", showWarnings = FALSE)
+logit_prob <- readRDS("objects/logit_prob.rds")
+knn_prob <- readRDS("objects/knn_prob.rds")
+svm_prob <- readRDS("objects/svm_prob.rds")
+ann_prob <- readRDS("objects/ann_prob.rds")
+tree_prob <- readRDS("objects/tree_prob.rds")
+rf_prob <- readRDS("objects/rf_prob.rds")
+test_y <- readRDS("objects/test_y.rds")
+```
+
+```{r analysis}
+# All vectors refer to the SAME test rows in the order saved by File 01.
+base_probs <- data.frame(Logistic = logit_prob, KNN = knn_prob,
+                         SVM = svm_prob, ANN = ann_prob,
+                         Tree = tree_prob, Forest = rf_prob)
+stopifnot(nrow(base_probs) == length(test_y),
+          all(is.finite(as.matrix(base_probs))),
+          all(as.matrix(base_probs) >= 0 & as.matrix(base_probs) <= 1))
+
+# One simple rule: average the six probabilities equally for each prospect.
+blend_prob <- rowMeans(base_probs)
+blend_pred <- factor(ifelse(blend_prob >= 0.5, "Drafted", "Undrafted"),
+                     levels = c("Undrafted", "Drafted"))
+head(base_probs)
+
+```
+
+```{r save-results, include=FALSE}
+saveRDS(base_probs, "objects/base_probs.rds")
+saveRDS(blend_prob, "objects/blend_prob.rds")
+saveRDS(blend_pred, "objects/blend_pred.rds")
+```

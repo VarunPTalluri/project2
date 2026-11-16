@@ -1,0 +1,82 @@
+---
+title: "NFL Draft Predictor | Stage 3 — Scouting Capacity and Financial Illustration"
+output: html_document
+---
+
+# Stage 3 — Scouting Capacity and Financial Illustration
+
+A team may not have enough scouting hours to review every prospect in detail. We simulate reviewing the highest-scored **25% of future-year combine prospects** and compare how many eventually drafted prospects appear on each shortlist. A no-model random shortlist has an expected drafted count equal to the overall draft rate times the number reviewed. The financial values below are **explicit assumptions, not observed NFL scouting costs**. Selection in the actual draft is a proxy for being on other teams' draft radar, not proof a prospect becomes a good professional player.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+dir.create("objects", showWarnings = FALSE)
+dir.create("data", showWarnings = FALSE)
+base_probs <- readRDS("objects/base_probs.rds")
+blend_prob <- readRDS("objects/blend_prob.rds")
+test_y <- readRDS("objects/test_y.rds")
+test_data <- readRDS("objects/test_data.rds")
+```
+
+```{r analysis}
+# Rank using one consistent holdout; never use draft_round as a feature.
+scoring <- data.frame(base_probs, ProbabilityBlend = blend_prob)
+truth <- as.integer(test_y == "Drafted")
+n <- length(truth)
+review_share <- 0.25
+review_slots <- max(1L, floor(n * review_share))
+expected_random <- review_slots * mean(truth)
+
+# Hours and dollars are scenarios only: 3 hours per film review at $65/hour.
+hours_per_review <- 3
+cost_per_hour <- 65
+cost_per_review <- hours_per_review * cost_per_hour
+full_review_cost <- n * cost_per_review
+shortlist_cost <- review_slots * cost_per_review
+
+# Each model selects the same number of prospects; only the ordering changes.
+scouting_table <- data.frame(Model = names(scoring),
+                             Reviewed = review_slots,
+                             DraftedOnShortlist = NA_integer_,
+                             Precision = NA_real_, Recall = NA_real_,
+                             LiftOverRandom = NA_real_)
+for (i in seq_len(ncol(scoring))) {
+  # Tie-break on original row order so the shortlist is reproducible.
+  ordered <- order(-scoring[[i]], seq_len(n))
+  chosen <- ordered[seq_len(review_slots)]
+  found <- sum(truth[chosen])
+  scouting_table$DraftedOnShortlist[i] <- found
+  scouting_table$Precision[i] <- found / review_slots
+  scouting_table$Recall[i] <- found / sum(truth)
+  scouting_table$LiftOverRandom[i] <- (found / review_slots) / mean(truth)
+}
+print(scouting_table)
+cat("All-player review cost (assumed): $", full_review_cost, "\n", sep = "")
+cat("25% shortlist review cost (assumed): $", shortlist_cost, "\n", sep = "")
+cat("Expected drafted prospects in a random shortlist:", round(expected_random, 1), "\n")
+
+# Test capacity sensitivity without choosing a new model based on these results.
+capacity_table <- data.frame()
+for (share in c(0.10, 0.25, 0.40)) {
+  slots <- max(1L, floor(n * share))
+  for (i in seq_len(ncol(scoring))) {
+    chosen <- order(-scoring[[i]], seq_len(n))[seq_len(slots)]
+    capacity_table <- rbind(capacity_table,
+      data.frame(Share = share, Model = names(scoring)[i], Reviewed = slots,
+                 DraftedFound = sum(truth[chosen]),
+                 ExpectedRandom = slots * mean(truth),
+                 ReviewCost = slots * cost_per_review))
+  }
+}
+print(capacity_table)
+
+```
+
+```{r save-results, include=FALSE}
+saveRDS(scouting_table, "objects/scouting_table.rds")
+saveRDS(capacity_table, "objects/capacity_table.rds")
+saveRDS(review_slots, "objects/review_slots.rds")
+saveRDS(expected_random, "objects/expected_random.rds")
+saveRDS(full_review_cost, "objects/full_review_cost.rds")
+saveRDS(shortlist_cost, "objects/shortlist_cost.rds")
+saveRDS(cost_per_review, "objects/cost_per_review.rds")
+```

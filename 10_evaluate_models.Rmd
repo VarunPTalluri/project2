@@ -1,0 +1,74 @@
+---
+title: "NFL Draft Predictor | Stage 3 — Compare Model Predictions"
+output: html_document
+---
+
+# Stage 3 — Compare Model Predictions
+
+Each model is evaluated on the **same 2022–2025 holdout seasons**, which were not used to train or tune it. Accuracy shows the share correctly classified; Kappa adjusts for chance agreement; sensitivity and specificity reveal the two types of classification errors. We also calculate **precision** (how many flagged prospects actually get drafted), since scouting teams care about making a useful shortlist. This evaluation is separate from model training.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+dir.create("objects", showWarnings = FALSE)
+dir.create("data", showWarnings = FALSE)
+test_y <- readRDS("objects/test_y.rds")
+logit_pred <- readRDS("objects/logit_pred.rds")
+knn_pred <- readRDS("objects/knn_pred.rds")
+svm_pred <- readRDS("objects/svm_pred.rds")
+ann_pred <- readRDS("objects/ann_pred.rds")
+tree_pred <- readRDS("objects/tree_pred.rds")
+rf_pred <- readRDS("objects/rf_pred.rds")
+blend_pred <- readRDS("objects/blend_pred.rds")
+base_probs <- readRDS("objects/base_probs.rds")
+blend_prob <- readRDS("objects/blend_prob.rds")
+```
+
+```{r analysis}
+library(caret)
+
+all_predictions <- list(Logistic = logit_pred, KNN = knn_pred,
+                        SVM = svm_pred, ANN = ann_pred,
+                        DecisionTree = tree_pred, RandomForest = rf_pred,
+                        ProbabilityBlend = blend_pred)
+# 0/1 labels here are for confusion matrices; the blend used probabilities.
+all_confusions <- lapply(all_predictions, function(pred) {
+  confusionMatrix(factor(pred, levels = c("Undrafted", "Drafted")),
+                  factor(test_y, levels = c("Undrafted", "Drafted")),
+                  positive = "Drafted")
+})
+for (name in names(all_confusions)) {
+  cat("\nMODEL:", name, "\n")
+  print(all_confusions[[name]])
+}
+
+# Pull out the same metrics for an easy side-by-side business comparison.
+metrics <- data.frame(
+  Model = names(all_confusions),
+  Accuracy = sapply(all_confusions, function(cm) unname(cm$overall["Accuracy"])),
+  Kappa = sapply(all_confusions, function(cm) unname(cm$overall["Kappa"])),
+  Sensitivity = sapply(all_confusions, function(cm) unname(cm$byClass["Sensitivity"])),
+  Specificity = sapply(all_confusions, function(cm) unname(cm$byClass["Specificity"])),
+  Precision = sapply(all_confusions, function(cm) unname(cm$byClass["Pos Pred Value"]))
+)
+# Simple baseline: predict the more frequent training class for every prospect.
+train_y <- readRDS("objects/train_y.rds")
+majority <- names(which.max(table(train_y)))
+majority_pred <- factor(rep(majority, length(test_y)), levels = levels(test_y))
+majority_cm <- confusionMatrix(majority_pred, test_y, positive = "Drafted")
+baseline_metrics <- data.frame(Model = "Always predict training majority",
+  Accuracy = as.numeric(majority_cm$overall["Accuracy"]),
+  Kappa = as.numeric(majority_cm$overall["Kappa"]),
+  Sensitivity = as.numeric(majority_cm$byClass["Sensitivity"]),
+  Specificity = as.numeric(majority_cm$byClass["Specificity"]),
+  Precision = as.numeric(majority_cm$byClass["Pos Pred Value"]))
+metrics <- rbind(metrics, baseline_metrics)
+print(metrics)
+
+```
+
+```{r save-results, include=FALSE}
+saveRDS(all_confusions, "objects/all_confusions.rds")
+saveRDS(all_predictions, "objects/all_predictions.rds")
+saveRDS(metrics, "objects/metrics.rds")
+saveRDS(majority_cm, "objects/majority_cm.rds")
+```

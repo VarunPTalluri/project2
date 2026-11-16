@@ -1,0 +1,151 @@
+---
+title: "NFL Draft Predictor | 01 — Data Preparation"
+output: html_document
+---
+
+# 1. Import and Clean
+
+We predict **whether an NFL combine participant is drafted**, not NFL career success. We follow the supplied `nflreadr::load_combine()` source for 2000–2025 and save a local snapshot. Height is converted to inches, similar positions are grouped, and specialists (`K`, `P`, `LS`) are excluded. We do not use any post-draft information as predictors. `school` is excluded to avoid hundreds of sparse school categories.
+
+# 2. Split and Preprocess
+
+To resemble predicting an upcoming draft class, we **train on 2000–2021 and test on 2022–2025**, rather than mixing seasons randomly. For missing combine measurements, we create missingness indicators and replace blank values with training-period medians. `model.matrix()` converts playing position to numeric dummy columns; min-max scaling uses training values only. We retain original factor columns for algorithms that support them directly. This prevents future-year data from influencing imputation and scaling.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+dir.create("objects", showWarnings = FALSE)
+dir.create("data", showWarnings = FALSE)
+```
+
+## Step A: Read, label, and clean the combine dataset
+
+```{r import-clean}
+library(nflreadr)
+
+# Read a local snapshot if it exists, otherwise download and save one.
+raw_file <- "data/combine_2000_2025.csv"
+if (file.exists(raw_file)) {
+  DraftRaw <- read.csv(raw_file, stringsAsFactors = FALSE)
+} else {
+  DraftRaw <- as.data.frame(load_combine(seasons = 2000:2025, file_type = "csv"))
+  write.csv(DraftRaw, raw_file, row.names = FALSE)
+}
+
+required <- c("season", "pos", "ht", "wt", "forty", "vertical",
+              "bench", "broad_jump", "cone", "shuttle", "draft_round")
+stopifnot(all(required %in% names(DraftRaw)))
+DraftRaw <- DraftRaw[DraftRaw$season %in% 2000:2025, , drop = FALSE]
+
+# Draft round is known only after the draft; use it to label y, never as x.
+DraftRaw$Drafted <- ifelse(is.na(DraftRaw$draft_round), 0, 1)
+
+# Height strings such as "6-2" mean 6 feet, 2 inches (74 inches).
+height_parts <- strsplit(ifelse(is.na(DraftRaw$ht), "", DraftRaw$ht), "-", fixed = TRUE)
+DraftRaw$InchHeight <- vapply(height_parts, function(h) {
+  if (length(h) != 2) return(NA_real_)
+  feet <- suppressWarnings(as.numeric(h[1]))
+  inches <- suppressWarnings(as.numeric(h[2]))
+  if (is.na(feet) || is.na(inches) || feet < 4 || feet > 7 || inches < 0 || inches > 11)
+    return(NA_real_)
+  feet * 12 + inches
+}, numeric(1))
+
+# Exclude specialist roles: separate position mechanics and sparse observations.
+DraftRaw$pos <- toupper(trimws(DraftRaw$pos))
+removed_specialists <- sum(DraftRaw$pos %in% c("K", "P", "LS"), na.rm = TRUE)
+DraftRaw <- DraftRaw[!is.na(DraftRaw$pos) &
+                     !(DraftRaw$pos %in% c("K", "P", "LS")), , drop = FALSE]
+
+# Group related positions to avoid many very small categories.
+pos <- DraftRaw$pos
+DraftRaw$pos_group <- ifelse(pos == "QB", "QB",
+  ifelse(pos %in% c("RB", "HB", "FB"), "RB",
+  ifelse(pos == "WR", "WR", ifelse(pos == "TE", "TE",
+  ifelse(pos %in% c("OL", "OT", "G", "OG", "T", "C"), "OL",
+  ifelse(pos %in% c("DL", "DE", "DT", "NT", "EDGE"), "DL",
+  ifelse(pos %in% c("LB", "ILB", "OLB"), "LB",
+  ifelse(pos %in% c("CB", "S", "FS", "SS", "DB"), "DB", "Other"))))))))
+DraftRaw$pos_group <- factor(DraftRaw$pos_group,
+                             levels = c("QB", "RB", "WR", "TE", "OL", "DL", "LB", "DB", "Other"))
+
+# Retain only pre-draft measurements, the historical year, and the response.
+measures <- c("InchHeight", "wt", "forty", "vertical", "bench",
+              "broad_jump", "cone", "shuttle")
+DraftData <- DraftRaw[, c("season", "pos_group", measures, "Drafted"), drop = FALSE]
+for (nm in measures) DraftData[[nm]] <- as.numeric(DraftData[[nm]])
+stopifnot(all(DraftData$Drafted %in% 0:1))
+
+cat("Total combine participants:", nrow(DraftData), "\n")
+cat("Specialist rows removed:", removed_specialists, "\n")
+print(table(DraftData$Drafted))
+print(round(colMeans(is.na(DraftData[, measures])) * 100, 1))
+```
+
+## Step B: Split by year, impute, dummy-code, and scale
+
+```{r split-preprocess}
+# A temporal test set is completely separate from cross-validation/tuning.
+train_data <- DraftData[DraftData$season <= 2021, , drop = FALSE]
+test_data <- DraftData[DraftData$season >= 2022, , drop = FALSE]
+stopifnot(nrow(train_data) > 100, nrow(test_data) > 100)
+
+# Set each missingness flag BEFORE imputation, so skipped drills remain visible.
+for (nm in measures) {
+  flag <- paste0(nm, "_missing")
+  train_data[[flag]] <- as.integer(is.na(train_data[[nm]]))
+  test_data[[flag]] <- as.integer(is.na(test_data[[nm]]))
+  med <- median(train_data[[nm]], na.rm = TRUE)
+  if (!is.finite(med)) stop(paste("All training values missing for", nm))
+  train_data[[nm]][is.na(train_data[[nm]])] <- med
+  test_data[[nm]][is.na(test_data[[nm]])] <- med
+}
+
+# No draft season/outcome column may enter X; keep only pre-draft predictors.
+feature_names <- c("pos_group", measures, paste0(measures, "_missing"))
+train_x_raw <- train_data[, feature_names, drop = FALSE]
+test_x_raw <- test_data[, feature_names, drop = FALSE]
+train_y <- factor(ifelse(train_data$Drafted == 1, "Drafted", "Undrafted"),
+                  levels = c("Undrafted", "Drafted"))
+test_y <- factor(ifelse(test_data$Drafted == 1, "Drafted", "Undrafted"),
+                 levels = c("Undrafted", "Drafted"))
+
+# Use fixed factor levels so model.matrix creates the same columns in both sets.
+train_x <- as.data.frame(model.matrix(~ . - 1, data = train_x_raw))
+test_x <- as.data.frame(model.matrix(~ . - 1, data = test_x_raw))
+stopifnot(identical(names(train_x), names(test_x)))
+names(train_x) <- make.names(names(train_x), unique = TRUE)
+names(test_x) <- names(train_x)
+
+# Min-max scale numeric columns using TRAINING minima and ranges only.
+min_x <- sapply(train_x, min)
+range_x <- sapply(train_x, max) - min_x
+range_x[range_x == 0] <- 1
+train_x_scaled <- as.data.frame(scale(train_x, center = min_x, scale = range_x))
+test_x_scaled <- as.data.frame(scale(test_x, center = min_x, scale = range_x))
+
+cat("Historical training years:", min(train_data$season), "to", max(train_data$season),
+    "| rows:", nrow(train_data), "\n")
+cat("Future holdout years:", min(test_data$season), "to", max(test_data$season),
+    "| rows:", nrow(test_data), "\n")
+print(prop.table(table(train_y)))
+print(prop.table(table(test_y)))
+```
+
+## Save prepared objects for every subsequent model
+
+```{r save-results, include=FALSE}
+# Save raw/cleaned data and all train/test versions once at the end.
+saveRDS(DraftRaw, "objects/raw_labeled.rds")
+saveRDS(DraftData, "objects/cleaned.rds")
+saveRDS(measures, "objects/measure_names.rds")
+saveRDS(removed_specialists, "objects/removed_specialists.rds")
+saveRDS(train_data, "objects/train_data.rds")
+saveRDS(test_data, "objects/test_data.rds")
+saveRDS(train_x_raw, "objects/train_x_raw.rds")
+saveRDS(test_x_raw, "objects/test_x_raw.rds")
+saveRDS(train_x_scaled, "objects/train_x_scaled.rds")
+saveRDS(test_x_scaled, "objects/test_x_scaled.rds")
+saveRDS(train_y, "objects/train_y.rds")
+saveRDS(test_y, "objects/test_y.rds")
+saveRDS(feature_names, "objects/feature_names.rds")
+```

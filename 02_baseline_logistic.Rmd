@@ -1,0 +1,32 @@
+---
+title: "NFL Draft Predictor | Baseline Logistic Regression"
+output: html_document
+---
+
+# Baseline Logistic Regression
+
+This simple historical baseline uses **pre-draft size and position** to predict whether a combine attendee is drafted. It provides an interpretable reference for the expanded Logistic Regression in File 03. The future holdout is not used to select predictors.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+dir.create("objects", showWarnings = FALSE)
+dir.create("data", showWarnings = FALSE)
+train_data <- readRDS("objects/train_data.rds")
+```
+
+```{r analysis}
+# The baseline model uses only position, height, and weight.
+prelim_model <- glm(Drafted ~ pos_group + InchHeight + wt,
+                    data = train_data, family = "binomial")
+summary(prelim_model)
+
+# The predicted probability means P(drafted), not an NFL career-success score.
+train_data$prelim_probability <- predict(prelim_model, type = "response")
+cat("Baseline training-data predicted probabilities:\n")
+print(summary(train_data$prelim_probability))
+
+```
+
+```{r save-results, include=FALSE}
+saveRDS(prelim_model, "objects/prelim_model.rds")
+```

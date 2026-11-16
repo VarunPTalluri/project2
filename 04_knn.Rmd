@@ -1,0 +1,44 @@
+---
+title: "NFL Draft Predictor | Model 2 — K-Nearest Neighbors"
+output: html_document
+---
+
+# Model 2 — K-Nearest Neighbors
+
+KNN classifies prospects by the outcomes of similar combine attendees. Its distances require scaled variables. We use the same **5-fold `caret` Kappa tuning** as the class automation example, varying `k` rather than selecting it using the final holdout.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+dir.create("objects", showWarnings = FALSE)
+dir.create("data", showWarnings = FALSE)
+train_x_scaled <- readRDS("objects/train_x_scaled.rds")
+test_x_scaled <- readRDS("objects/test_x_scaled.rds")
+train_y <- readRDS("objects/train_y.rds")
+```
+
+```{r analysis}
+library(caret)
+set.seed(12345)
+ctrl <- trainControl(method = "cv", number = 5, classProbs = TRUE)
+
+# Larger k makes more neighbors vote; Kappa selects k without using test labels.
+knn_model <- train(x = train_x_scaled, y = train_y, method = "knn",
+                   trControl = ctrl, metric = "Kappa",
+                   tuneGrid = expand.grid(k = c(5, 11, 21, 31)))
+print(knn_model$results)
+cat("Selected k:", knn_model$bestTune$k, "
+")
+
+# Save class-1 probabilities; keep 0/1 classes for confusion matrices.
+knn_prob <- as.numeric(predict(knn_model, test_x_scaled, type = "prob")[, "Drafted"])
+knn_pred <- factor(ifelse(knn_prob >= 0.5, "Drafted", "Undrafted"),
+                   levels = c("Undrafted", "Drafted"))
+
+```
+
+```{r save-results, include=FALSE}
+saveRDS(knn_model, "objects/knn_model.rds")
+saveRDS(knn_model$results, "objects/knn_cv.rds")
+saveRDS(knn_prob, "objects/knn_prob.rds")
+saveRDS(knn_pred, "objects/knn_pred.rds")
+```

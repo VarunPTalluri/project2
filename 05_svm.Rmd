@@ -1,0 +1,54 @@
+---
+title: "NFL Draft Predictor | Model 3 — Support Vector Machine"
+output: html_document
+---
+
+# Model 3 — Support Vector Machine
+
+Following the class SVM example, we compare a **linear kernel** to a **radial kernel**. Both are evaluated by 5-fold cross-validation on historical prospects using the `caret` methods `svmLinear` and `svmRadial`. This adds no separate cost-parameter search and uses the same scaled input features for a fair comparison.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+dir.create("objects", showWarnings = FALSE)
+dir.create("data", showWarnings = FALSE)
+train_x_scaled <- readRDS("objects/train_x_scaled.rds")
+test_x_scaled <- readRDS("objects/test_x_scaled.rds")
+train_y <- readRDS("objects/train_y.rds")
+```
+
+```{r analysis}
+library(caret)
+library(kernlab)
+ctrl <- trainControl(method = "cv", number = 5, classProbs = TRUE)
+
+# Initial model: a straight separating boundary (C fixed at 1).
+set.seed(12345)
+linear_svm <- train(x = train_x_scaled, y = train_y, method = "svmLinear",
+                    tuneGrid = expand.grid(C = 1), metric = "Kappa", trControl = ctrl)
+
+# Improved model: curved boundary; estimate kernel width from historical training X.
+sigma <- as.numeric(kernlab::sigest(as.matrix(train_x_scaled)))[2]
+set.seed(12345)
+radial_svm <- train(x = train_x_scaled, y = train_y, method = "svmRadial",
+                    tuneGrid = expand.grid(sigma = sigma, C = 1),
+                    metric = "Kappa", trControl = ctrl)
+
+svm_cv <- data.frame(Version = c("Linear", "Radial"),
+                     Accuracy = c(linear_svm$results$Accuracy[1],
+                                  max(radial_svm$results$Accuracy[radial_svm$results$Kappa == max(radial_svm$results$Kappa)])),
+                     Kappa = c(linear_svm$results$Kappa[1], max(radial_svm$results$Kappa)))
+print(svm_cv)
+choice <- order(-svm_cv$Kappa, -svm_cv$Accuracy)[1]
+svm_model <- if (choice == 1) linear_svm else radial_svm
+svm_prob <- as.numeric(predict(svm_model, test_x_scaled, type = "prob")[, "Drafted"])
+svm_pred <- factor(ifelse(svm_prob >= 0.5, "Drafted", "Undrafted"),
+                   levels = c("Undrafted", "Drafted"))
+
+```
+
+```{r save-results, include=FALSE}
+saveRDS(svm_model, "objects/svm_model.rds")
+saveRDS(svm_cv, "objects/svm_cv.rds")
+saveRDS(svm_prob, "objects/svm_prob.rds")
+saveRDS(svm_pred, "objects/svm_pred.rds")
+```

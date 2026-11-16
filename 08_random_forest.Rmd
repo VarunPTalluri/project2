@@ -1,0 +1,174 @@
+
+---
+title: "NFL Draft Predictor | Model 6 — Random Forest"
+output: html_document
+---
+
+# Model 6 — Random Forest
+
+Random Forest combines many Decision Trees to generate predictions. Unlike a single Decision Tree, it allows different variables and observations to influence each tree, helping reduce overfitting.
+
+We compare two values of `mtry`, which determines how many predictors are considered at each split. To keep computation manageable, we use 3-fold cross-validation on a representative sample of up to 2,500 historical players. We select the model with the highest Kappa, then train our final Random Forest on the complete historical training dataset.
+
+The 2022–2025 test data is not used during model tuning.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+
+dir.create("objects", showWarnings = FALSE)
+
+# Load the prepared data from File 01.
+train_x_raw <- readRDS("objects/train_x_raw.rds")
+test_x_raw <- readRDS("objects/test_x_raw.rds")
+train_y <- readRDS("objects/train_y.rds")
+```
+
+## Step 1: Prepare a smaller tuning sample
+
+```{r tuning-sample}
+library(caret)
+library(randomForest)
+
+# Limit the cross-validation sample to 2,500 players.
+# We preserve the proportion of drafted and undrafted players.
+set.seed(12345)
+
+rf_n <- min(2500, length(train_y))
+
+if (rf_n < length(train_y)) {
+  tune_rows <- as.vector(
+    createDataPartition(
+      train_y,
+      p = rf_n / length(train_y),
+      list = FALSE
+    )
+  )
+} else {
+  tune_rows <- seq_along(train_y)
+}
+
+rf_tune_x <- train_x_raw[tune_rows, , drop = FALSE]
+rf_tune_y <- train_y[tune_rows]
+
+cat("Players used for tuning:", nrow(rf_tune_x), "\n")
+cat("Players available for final training:", nrow(train_x_raw), "\n")
+```
+
+## Step 2: Tune the Random Forest
+
+```{r tuning}
+# mtry controls the number of variables considered at each split.
+p <- ncol(train_x_raw)
+
+mtry_values <- unique(
+  pmin(p, c(2, floor(sqrt(p))))
+)
+
+# Use three folds and two mtry candidates to reduce training time.
+ctrl <- trainControl(
+  method = "cv",
+  number = 3,
+  classProbs = FALSE,
+  verboseIter = TRUE,
+  allowParallel = FALSE
+)
+
+set.seed(12345)
+
+rf_tuned <- train(
+  x = rf_tune_x,
+  y = rf_tune_y,
+  method = "rf",
+  tuneGrid = expand.grid(mtry = mtry_values),
+  ntree = 80,
+  nodesize = 10,
+  trControl = ctrl,
+  metric = "Kappa",
+  importance = FALSE
+)
+
+# Save the cross-validation results for the final report.
+rf_cv <- rf_tuned$results
+
+print(rf_cv)
+print(rf_tuned$bestTune)
+
+# Select the mtry value with the highest cross-validation Kappa.
+best_mtry <- as.integer(rf_tuned$bestTune$mtry)
+```
+
+## Step 3: Train the Final Random Forest
+
+```{r final-model}
+# Refit the model using ALL historical training players.
+# The future-year test dataset remains untouched.
+
+cat("Fitting final Random Forest using mtry =", best_mtry, "\n")
+
+set.seed(12345)
+
+rf_model <- randomForest(
+  x = train_x_raw,
+  y = train_y,
+  mtry = best_mtry,
+  ntree = 150,
+  nodesize = 10,
+  importance = TRUE
+)
+
+print(rf_model)
+
+# Random Forest also reports its out-of-bag error.
+# This provides an additional training-based performance check.
+cat("Final out-of-bag error:\n")
+print(tail(rf_model$err.rate, 1))
+
+# Show which variables contribute most to predictions.
+varImpPlot(
+  rf_model,
+  main = "Random Forest Variable Importance"
+)
+```
+
+## Step 4: Predict the Test Data
+
+```{r predictions}
+# Predict the probability of being drafted for each test player.
+rf_prob <- as.numeric(
+  predict(
+    rf_model,
+    newdata = test_x_raw,
+    type = "prob"
+  )[, "Drafted"]
+)
+
+# Convert probabilities to Drafted / Undrafted classifications.
+rf_pred <- factor(
+  ifelse(rf_prob >= 0.5, "Drafted", "Undrafted"),
+  levels = c("Undrafted", "Drafted")
+)
+
+# Verify that every test player received a valid probability.
+stopifnot(
+  length(rf_prob) == nrow(test_x_raw),
+  all(is.finite(rf_prob)),
+  all(rf_prob >= 0 & rf_prob <= 1)
+)
+
+cat("Test predictions generated:", length(rf_pred), "\n")
+print(table(rf_pred))
+```
+
+## Step 5: Save Results
+
+```{r save-results, include=FALSE}
+# Preserve the same object filenames used by later project files.
+saveRDS(rf_model, "objects/rf_model.rds")
+saveRDS(rf_cv, "objects/rf_cv.rds")
+saveRDS(rf_prob, "objects/rf_prob.rds")
+saveRDS(rf_pred, "objects/rf_pred.rds")
+```

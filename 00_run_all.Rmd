@@ -1,0 +1,30 @@
+---
+title: "NFL Draft Predictor — Run All Files"
+output: html_document
+---
+
+Knit this file from the project folder. It creates an `objects/` directory and renders the numbered phases in order, followed by the final report. File 01 downloads the combine dataset on the first run using `nflreadr`; later runs reuse the cached `data/combine_2000_2025.csv`.
+
+```{r run-all}
+files <- c(
+  "01_data_preparation.Rmd",
+  "02_baseline_logistic.Rmd",
+  "03_logistic.Rmd",
+  "04_knn.Rmd",
+  "05_svm.Rmd",
+  "06_ann.Rmd",
+  "07_decision_tree.Rmd",
+  "08_random_forest.Rmd",
+  "09_probability_blend.Rmd",
+  "10_evaluate_models.Rmd",
+  "11_scouting_business_case.Rmd",
+  "12_quality_checks.Rmd",
+  "main.Rmd"
+)
+
+for (file in files) {
+  cat("Rendering:", file, "\n")
+  rmarkdown::render(file, quiet = TRUE,
+                    envir = new.env(parent = globalenv()))
+}
+```

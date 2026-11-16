@@ -1,0 +1,45 @@
+---
+title: "NFL Draft Predictor | Model 5 — Decision Tree"
+output: html_document
+---
+
+# Model 5 — Decision Tree
+
+A Decision Tree turns prospect characteristics into readable rules. We compare different tree complexity values (`cp`) with 5-fold cross-validation, as in the pruning and `plotcp()` material from class. A simpler tree may generalize better to future draft years.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+dir.create("objects", showWarnings = FALSE)
+dir.create("data", showWarnings = FALSE)
+train_x_raw <- readRDS("objects/train_x_raw.rds")
+test_x_raw <- readRDS("objects/test_x_raw.rds")
+train_y <- readRDS("objects/train_y.rds")
+```
+
+```{r analysis}
+library(caret)
+library(rpart)
+library(rpart.plot)
+ctrl <- trainControl(method = "cv", number = 5, classProbs = TRUE)
+
+set.seed(12345)
+tree_model <- train(x = train_x_raw, y = train_y, method = "rpart",
+                    tuneGrid = expand.grid(cp = c(0.002, 0.005, 0.01, 0.02)),
+                    trControl = ctrl, metric = "Kappa")
+print(tree_model$results)
+print(tree_model$bestTune)
+# Plot the final fitted tree, not a tree trained on held-out players.
+rpart.plot(tree_model$finalModel, main = "Draft Probability Decision Tree")
+
+tree_prob <- as.numeric(predict(tree_model, test_x_raw, type = "prob")[, "Drafted"])
+tree_pred <- factor(ifelse(tree_prob >= 0.5, "Drafted", "Undrafted"),
+                    levels = c("Undrafted", "Drafted"))
+
+```
+
+```{r save-results, include=FALSE}
+saveRDS(tree_model, "objects/tree_model.rds")
+saveRDS(tree_model$results, "objects/tree_cv.rds")
+saveRDS(tree_prob, "objects/tree_prob.rds")
+saveRDS(tree_pred, "objects/tree_pred.rds")
+```

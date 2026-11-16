@@ -1,0 +1,13 @@
+NFL DRAFT PREDICTOR — MODEL EXECUTION STATUS
+
+This is a runnable, modular R Markdown project. The actual 2000–2025
+combine CSV and R runtime were unavailable during preparation.
+
+No genuine fitted model numbers or final knitted HTML can be provided yet.
+To produce them, unzip, open folder in RStudio with internet, and knit
+00_run_all.Rmd. It downloads the source data, builds objects/ from each phase,
+and produces main.html.
+
+main.Rmd is the final submission report; it compiles outputs, not models.
+Intermediate Deliverable #1 has been excluded from this final-project ZIP.
+README.md contains setup, dependency, and caveat information.

@@ -1,0 +1,46 @@
+---
+title: "NFL Draft Predictor | Final Quality Checks"
+output: html_document
+---
+
+# Final checks before using the report
+
+This file checks the saved R objects rather than training new models. A failure means a phase should be rerun before using the reported results.
+
+```{r checks}
+DraftData <- readRDS("objects/cleaned.rds")
+train_data <- readRDS("objects/train_data.rds")
+test_data <- readRDS("objects/test_data.rds")
+train_x_raw <- readRDS("objects/train_x_raw.rds")
+test_x_raw <- readRDS("objects/test_x_raw.rds")
+train_y <- readRDS("objects/train_y.rds")
+test_y <- readRDS("objects/test_y.rds")
+base_probs <- readRDS("objects/base_probs.rds")
+blend_prob <- readRDS("objects/blend_prob.rds")
+metrics <- readRDS("objects/metrics.rds")
+scouting_table <- readRDS("objects/scouting_table.rds")
+
+# Year groups must not overlap, and no rows should disappear in the split.
+stopifnot(max(train_data$season) <= 2021,
+          min(test_data$season) >= 2022,
+          nrow(train_data) + nrow(test_data) == nrow(DraftData))
+
+# Draft results and identities cannot be input predictors.
+forbidden <- c("Drafted", "draft_round", "draft_year", "draft_team",
+               "draft_ovr", "season", "player_name", "pfr_id")
+stopifnot(!any(forbidden %in% names(train_x_raw)),
+          identical(names(train_x_raw), names(test_x_raw)))
+
+# Every probability vector must match the holdout row count and be in [0,1].
+stopifnot(nrow(base_probs) == length(test_y),
+          length(blend_prob) == length(test_y),
+          all(is.finite(as.matrix(base_probs))),
+          all(as.matrix(base_probs) >= 0 & as.matrix(base_probs) <= 1),
+          all(is.finite(blend_prob) & blend_prob >= 0 & blend_prob <= 1))
+
+# Seven predictive approaches plus one majority-class baseline were evaluated.
+stopifnot(nrow(metrics) == 8, nrow(scouting_table) == 7,
+          length(train_y) == nrow(train_data),
+          length(test_y) == nrow(test_data))
+cat("All saved-data integrity checks passed.\n")
+```

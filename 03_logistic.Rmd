@@ -1,0 +1,58 @@
+---
+title: "NFL Draft Predictor | Model 1 — Logistic Regression"
+output: html_document
+---
+
+# Model 1 — Logistic Regression
+
+Baseline: size + position, matching File 02. Improvement: add the combine drills and missing-test indicators. I compare **5-fold cross-validated Kappa and Accuracy** using `caret::train()` as taught in class, select the better specification using training data only, and generate a single probability for each held-out prospect.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+dir.create("objects", showWarnings = FALSE)
+dir.create("data", showWarnings = FALSE)
+train_data <- readRDS("objects/train_data.rds")
+test_data <- readRDS("objects/test_data.rds")
+train_x_raw <- readRDS("objects/train_x_raw.rds")
+test_x_raw <- readRDS("objects/test_x_raw.rds")
+train_y <- readRDS("objects/train_y.rds")
+```
+
+```{r analysis}
+library(caret)
+set.seed(12345)
+ctrl <- trainControl(method = "cv", number = 5, classProbs = TRUE)
+
+# Initial model: draft outcome explained by position and physical size.
+baseline_train <- data.frame(Drafted = train_y,
+                             train_x_raw[, c("pos_group", "InchHeight", "wt")])
+base_logit <- train(Drafted ~ ., data = baseline_train, method = "glm",
+                    family = binomial(), metric = "Kappa", trControl = ctrl)
+
+# Improved model: add test scores and flags showing which drills were missing.
+expanded_train <- data.frame(Drafted = train_y, train_x_raw)
+set.seed(12345)
+expanded_logit <- train(Drafted ~ ., data = expanded_train, method = "glm",
+                        family = binomial(), metric = "Kappa", trControl = ctrl)
+
+logit_cv <- data.frame(Version = c("Size and position", "Combine drills added"),
+                       Accuracy = c(base_logit$results$Accuracy[1], expanded_logit$results$Accuracy[1]),
+                       Kappa = c(base_logit$results$Kappa[1], expanded_logit$results$Kappa[1]))
+print(logit_cv)
+# Select the version with higher CV Kappa; Accuracy breaks ties.
+choice <- order(-logit_cv$Kappa, -logit_cv$Accuracy)[1]
+logit_model <- if (choice == 1) base_logit else expanded_logit
+logit_test_x <- if (choice == 1) test_x_raw[, c("pos_group", "InchHeight", "wt")] else test_x_raw
+logit_prob <- as.numeric(predict(logit_model, newdata = logit_test_x, type = "prob")[, "Drafted"])
+logit_pred <- factor(ifelse(logit_prob >= 0.5, "Drafted", "Undrafted"),
+                     levels = c("Undrafted", "Drafted"))
+
+```
+
+```{r save-results, include=FALSE}
+saveRDS(logit_model, "objects/logit_model.rds")
+saveRDS(logit_cv, "objects/logit_cv.rds")
+saveRDS(logit_prob, "objects/logit_prob.rds")
+saveRDS(logit_pred, "objects/logit_pred.rds")
+saveRDS(choice, "objects/logit_choice.rds")
+```

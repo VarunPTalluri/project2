@@ -1,0 +1,153 @@
+
+---
+title: "NFL Draft Predictor | Model 4 — Artificial Neural Network"
+output: html_document
+---
+
+# Model 4 — Artificial Neural Network
+
+The original ANN tried six cross-validation fits plus a final model and could take a long time to knit. To keep the class `neuralnet()` approach practical, I compare **one versus two hidden neurons on one training-only validation split**. I cap the sample used to train this computationally expensive model at 2,500 historical players. All 2022–2025 players still receive predictions, and none are used for tuning. This smaller training sample is a computational compromise, not an improvement in predictive accuracy.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+dir.create("objects", showWarnings = FALSE)
+
+# Load the scaled predictors and training outcomes from data preparation.
+train_x_scaled <- readRDS("objects/train_x_scaled.rds")
+test_x_scaled <- readRDS("objects/test_x_scaled.rds")
+train_y <- readRDS("objects/train_y.rds")
+```
+
+```{r analysis}
+library(neuralnet)
+library(caret)
+
+# Select up to 2,500 historical players while preserving class proportions.
+set.seed(12345)
+ann_n <- min(2500, length(train_y))
+
+ann_rows <- as.vector(
+  createDataPartition(
+    train_y,
+    p = ann_n / length(train_y),
+    list = FALSE
+  )
+)
+
+ann_data <- data.frame(
+  y = as.integer(train_y[ann_rows] == "Drafted"),
+  train_x_scaled[ann_rows, , drop = FALSE]
+)
+
+# Split the ANN sample into 80% fitting and 20% validation.
+set.seed(12345)
+
+fit_rows <- as.vector(
+  createDataPartition(ann_data$y, p = 0.8, list = FALSE)
+)
+
+val_rows <- setdiff(seq_len(nrow(ann_data)), fit_rows)
+
+# Compare one hidden neuron against two hidden neurons.
+ann_cv <- data.frame(
+  Hidden = c(1, 2),
+  Accuracy = NA_real_,
+  Kappa = NA_real_
+)
+
+for (i in seq_len(nrow(ann_cv))) {
+
+  cat("Fitting ANN candidate", i, "of", nrow(ann_cv), "\n")
+
+  set.seed(12345 + i)
+
+  # Limit training steps to prevent excessively long model fitting.
+  trial <- neuralnet(
+    y ~ .,
+    data = ann_data[fit_rows, , drop = FALSE],
+    hidden = ann_cv$Hidden[i],
+    linear.output = FALSE,
+    threshold = 0.1,
+    stepmax = 20000
+  )
+
+  # Predict probabilities for the validation sample.
+  val_prob <- as.numeric(
+    predict(trial, ann_data[val_rows, -1, drop = FALSE])
+  )
+
+  # Convert probabilities into classifications for evaluation.
+  val_pred <- factor(
+    ifelse(val_prob >= 0.5, "Drafted", "Undrafted"),
+    levels = c("Undrafted", "Drafted")
+  )
+
+  val_actual <- factor(
+    ifelse(ann_data$y[val_rows] == 1, "Drafted", "Undrafted"),
+    levels = c("Undrafted", "Drafted")
+  )
+
+  cm <- confusionMatrix(
+    val_pred,
+    val_actual,
+    positive = "Drafted"
+  )
+
+  ann_cv$Accuracy[i] <- as.numeric(cm$overall["Accuracy"])
+  ann_cv$Kappa[i] <- as.numeric(cm$overall["Kappa"])
+}
+
+# Review both models and select the highest validation Kappa.
+print(ann_cv)
+
+chosen_hidden <- ann_cv$Hidden[
+  order(-ann_cv$Kappa, -ann_cv$Accuracy)[1]
+]
+
+# Refit the selected network on the complete sampled historical group.
+cat(
+  "Fitting final ANN with",
+  chosen_hidden,
+  "hidden neuron(s) on",
+  nrow(ann_data),
+  "historical players\n"
+)
+
+set.seed(12345)
+
+ann_model <- neuralnet(
+  y ~ .,
+  data = ann_data,
+  hidden = chosen_hidden,
+  linear.output = FALSE,
+  threshold = 0.1,
+  stepmax = 20000
+)
+
+# Generate predictions for every player in the future-year test set.
+ann_prob <- as.numeric(predict(ann_model, test_x_scaled))
+
+ann_pred <- factor(
+  ifelse(ann_prob >= 0.5, "Drafted", "Undrafted"),
+  levels = c("Undrafted", "Drafted")
+)
+
+# Confirm that every test player received a valid probability.
+stopifnot(
+  length(ann_prob) == nrow(test_x_scaled),
+  all(is.finite(ann_prob))
+)
+```
+
+```{r save-results, include=FALSE}
+# Save the fitted model, tuning results, and final predictions.
+saveRDS(ann_model, "objects/ann_model.rds")
+saveRDS(ann_cv, "objects/ann_cv.rds")
+saveRDS(ann_prob, "objects/ann_prob.rds")
+saveRDS(ann_pred, "objects/ann_pred.rds")
+
+# Save the selected settings for the consolidated report.
+saveRDS(chosen_hidden, "objects/ann_hidden.rds")
+saveRDS(nrow(ann_data), "objects/ann_training_n.rds")
+```
