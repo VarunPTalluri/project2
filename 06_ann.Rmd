@@ -140,6 +140,565 @@ stopifnot(
 )
 ```
 
+
+
+
+
+
+## **6.1 Baseline Model**
+
+```{r}
+library(neuralnet)
+library(caret)
+
+# Select up to 2,500 historical players while preserving class proportions.
+set.seed(12345)
+ann_n <- min(2500, length(train_y))
+
+ann_rows <- as.vector(
+  createDataPartition(
+    train_y,
+    p = ann_n / length(train_y),
+    list = FALSE
+  )
+)
+
+ann_data <- data.frame(
+  y = as.integer(train_y[ann_rows] == "Drafted"),
+  train_x_scaled[ann_rows, , drop = FALSE]
+)
+
+# Split the ANN sample into 80% fitting and 20% validation.
+set.seed(12345)
+
+fit_rows <- as.vector(
+  createDataPartition(ann_data$y, p = 0.8, list = FALSE)
+)
+
+val_rows <- setdiff(seq_len(nrow(ann_data)), fit_rows)
+
+```
+
+```{r}
+simplemodel <- neuralnet(
+  y ~ .,
+  data = ann_data[fit_rows, , drop = FALSE],
+  hidden = 1,
+  linear.output = FALSE,
+  stepmax = 1e8,
+  lifesign = "full"
+)
+
+plot(simplemodel, rep = 1)
+```
+
+
+## **6.2 Improving the Model**
+
+```{r}
+# ============================================================
+# MODEL 4: IMPROVED NFL DRAFT ANN
+# Exhaustive Architecture Search:
+# 1, 2 and 3 Hidden Layers
+# ============================================================
+
+library(neuralnet)
+library(caret)
+
+set.seed(12345)
+
+# ============================================================
+# STEP 1: PREPARE ANN TRAINING DATA
+# ============================================================
+
+# Select up to approximately 2,500 historical players
+
+ann_n <- min(2500, length(train_y))
+
+ann_rows <- as.vector(
+  createDataPartition(
+    train_y,
+    p = ann_n / length(train_y),
+    list = FALSE
+  )
+)
+
+ann_data <- data.frame(
+  y = as.integer(train_y[ann_rows] == "Drafted"),
+  train_x_scaled[ann_rows, , drop = FALSE]
+)
+
+# Check predictor data
+
+if (any(!is.finite(as.matrix(ann_data[, -1, drop = FALSE])))) {
+  stop("Missing or non-finite predictor values found.")
+}
+
+# ============================================================
+# STEP 2: CREATE TRAINING AND VALIDATION SETS
+# ============================================================
+
+set.seed(12345)
+
+fit_rows <- as.vector(
+  createDataPartition(
+    ann_data$y,
+    p = 0.80,
+    list = FALSE
+  )
+)
+
+val_rows <- setdiff(
+  seq_len(nrow(ann_data)),
+  fit_rows
+)
+
+ann_training <- ann_data[
+  fit_rows, ,
+  drop = FALSE
+]
+
+ann_validation <- ann_data[
+  val_rows, ,
+  drop = FALSE
+]
+
+validation_X <- ann_validation[, -1, drop = FALSE]
+
+validation_y <- ann_validation$y
+
+# ============================================================
+# STEP 3: GENERATE ANN ARCHITECTURES
+# One and Two Hidden Layers Only
+# ============================================================
+
+# Set neuron range for each hidden layer
+
+min_neurons <- 1
+max_neurons <- 6
+
+neuron_range <- min_neurons:max_neurons
+
+# ------------------------------------------------------------
+# ONE HIDDEN LAYER: X
+# ------------------------------------------------------------
+
+architectures_1 <- lapply(
+  neuron_range,
+  function(x) as.integer(x)
+)
+
+# ------------------------------------------------------------
+# TWO HIDDEN LAYERS: X-X
+# ------------------------------------------------------------
+
+grid_2 <- expand.grid(
+  layer1 = neuron_range,
+  layer2 = neuron_range
+)
+
+architectures_2 <- lapply(
+  seq_len(nrow(grid_2)),
+  function(i) {
+    as.integer(unlist(grid_2[i, ]))
+  }
+)
+
+# ------------------------------------------------------------
+# COMBINE ARCHITECTURES
+# ------------------------------------------------------------
+
+architectures <- c(
+  architectures_1,
+  architectures_2
+)
+
+cat("\n====================================\n")
+cat("ANN ARCHITECTURE SEARCH\n")
+cat("====================================\n")
+
+cat(
+  "One hidden layer:",
+  length(architectures_1),
+  "\n"
+)
+
+cat(
+  "Two hidden layers:",
+  length(architectures_2),
+  "\n"
+)
+
+cat(
+  "Total architectures:",
+  length(architectures),
+  "\n"
+)
+
+# ============================================================
+# STEP 4: INITIALISE RESULTS
+# ============================================================
+
+ann_cv <- data.frame(
+  Architecture = character(),
+  Hidden_Layers = integer(),
+  Total_Neurons = integer(),
+  Accuracy = numeric(),
+  Kappa = numeric(),
+  Sensitivity = numeric(),
+  Specificity = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# ============================================================
+# STEP 5: TRAIN AND VALIDATE ALL ARCHITECTURES
+# ============================================================
+
+for (i in seq_along(architectures)) {
+  
+  hidden <- architectures[[i]]
+  
+  architecture_name <- paste(
+    hidden,
+    collapse = "-"
+  )
+  
+  cat(
+    "\nTesting architecture",
+    i,
+    "of",
+    length(architectures),
+    ":",
+    architecture_name,
+    "\n"
+  )
+  
+  set.seed(12345 + i)
+  
+  # Train ANN
+  
+  trial <- tryCatch(
+    
+    neuralnet(
+      y ~ .,
+      data = ann_training,
+      hidden = hidden,
+      linear.output = FALSE,
+      threshold = 0.1,
+      stepmax = 20000,
+      lifesign = "minimal"
+    ),
+    
+    error = function(e) {
+      
+      message(
+        "Training failed for ",
+        architecture_name,
+        ": ",
+        e$message
+      )
+      
+      NULL
+    }
+  )
+  
+  if (is.null(trial)) next
+  
+  # ----------------------------------------------------------
+  # VALIDATION PREDICTIONS
+  # ----------------------------------------------------------
+  
+  val_prob <- tryCatch(
+    
+    as.numeric(
+      predict(
+        trial,
+        validation_X
+      )
+    ),
+    
+    error = function(e) NULL
+  )
+  
+  if (
+    is.null(val_prob) ||
+    length(val_prob) != length(validation_y) ||
+    any(!is.finite(val_prob))
+  ) {
+    next
+  }
+  
+  # ----------------------------------------------------------
+  # CLASSIFY PREDICTIONS
+  # ----------------------------------------------------------
+  
+  val_pred <- factor(
+    ifelse(
+      val_prob >= 0.50,
+      "Drafted",
+      "Undrafted"
+    ),
+    levels = c("Undrafted", "Drafted")
+  )
+  
+  val_actual <- factor(
+    ifelse(
+      validation_y == 1,
+      "Drafted",
+      "Undrafted"
+    ),
+    levels = c("Undrafted", "Drafted")
+  )
+  
+  # ----------------------------------------------------------
+  # CONFUSION MATRIX AND PERFORMANCE METRICS
+  # ----------------------------------------------------------
+  
+  cm <- tryCatch(
+    
+    confusionMatrix(
+      val_pred,
+      val_actual,
+      positive = "Drafted"
+    ),
+    
+    error = function(e) NULL
+  )
+  
+  if (is.null(cm)) next
+  
+  # ----------------------------------------------------------
+  # STORE RESULTS
+  # ----------------------------------------------------------
+  
+  ann_cv <- rbind(
+    ann_cv,
+    
+    data.frame(
+      Architecture = architecture_name,
+      Hidden_Layers = length(hidden),
+      Total_Neurons = sum(hidden),
+      
+      Accuracy = as.numeric(
+        cm$overall["Accuracy"]
+      ),
+      
+      Kappa = as.numeric(
+        cm$overall["Kappa"]
+      ),
+      
+      Sensitivity = as.numeric(
+        cm$byClass["Sensitivity"]
+      ),
+      
+      Specificity = as.numeric(
+        cm$byClass["Specificity"]
+      )
+    )
+  )
+}
+
+# ============================================================
+# STEP 6: RANK ANN ARCHITECTURES
+# ============================================================
+
+if (nrow(ann_cv) == 0) {
+  stop("No ANN architectures were successfully trained.")
+}
+
+# Rank by Kappa, followed by Accuracy
+
+ann_cv <- ann_cv[
+  order(
+    -ann_cv$Kappa,
+    -ann_cv$Accuracy,
+    na.last = TRUE
+  ),
+]
+
+rownames(ann_cv) <- NULL
+
+cat("\n====================================\n")
+cat("ANN ARCHITECTURE SEARCH RESULTS\n")
+cat("====================================\n")
+
+print(ann_cv)
+
+cat(
+  "\nSuccessfully evaluated architectures:",
+  nrow(ann_cv),
+  "out of",
+  length(architectures),
+  "\n"
+)
+
+# ============================================================
+# STEP 7: SELECT BEST ANN ARCHITECTURE
+# ============================================================
+
+best_architecture <- ann_cv[1, , drop = FALSE]
+
+best_hidden <- as.integer(
+  strsplit(
+    best_architecture$Architecture,
+    "-"
+  )[[1]]
+)
+
+chosen_hidden <- best_hidden
+
+cat("\n====================================\n")
+cat("BEST ANN ARCHITECTURE\n")
+cat("====================================\n")
+
+cat(
+  "Architecture:",
+  best_architecture$Architecture,
+  "\n"
+)
+
+cat(
+  "Number of hidden layers:",
+  length(best_hidden),
+  "\n"
+)
+
+cat(
+  "Neurons per hidden layer:",
+  paste(best_hidden, collapse = ", "),
+  "\n"
+)
+
+cat(
+  "Validation Accuracy:",
+  round(best_architecture$Accuracy, 4),
+  "\n"
+)
+
+cat(
+  "Validation Kappa:",
+  round(best_architecture$Kappa, 4),
+  "\n"
+)
+
+cat(
+  "Validation Sensitivity:",
+  round(best_architecture$Sensitivity, 4),
+  "\n"
+)
+
+cat(
+  "Validation Specificity:",
+  round(best_architecture$Specificity, 4),
+  "\n"
+)
+
+# ============================================================
+# STEP 8: TRAIN FINAL ANN MODEL
+# ============================================================
+
+# Refit the selected architecture using all sampled
+# historical training observations
+
+set.seed(12345)
+
+ann_model <- neuralnet(
+  y ~ .,
+  data = ann_data,
+  hidden = chosen_hidden,
+  linear.output = FALSE,
+  threshold = 0.1,
+  stepmax = 20000,
+  lifesign = "full"
+)
+
+# Retain original project model name
+
+improved_ANN_model <- ann_model
+
+# ============================================================
+# STEP 9: PLOT FINAL ANN MODEL
+# ============================================================
+
+plot(
+  ann_model,
+  rep = 1
+)
+
+# ============================================================
+# STEP 10: PREDICT NFL DRAFT OUTCOMES
+# ============================================================
+
+# Predict probabilities for 2022-2025 players
+
+ann_prob <- as.numeric(
+  predict(
+    ann_model,
+    test_x_scaled
+  )
+)
+
+# Convert probabilities into classifications
+
+ann_pred <- factor(
+  ifelse(
+    ann_prob >= 0.50,
+    "Drafted",
+    "Undrafted"
+  ),
+  levels = c("Undrafted", "Drafted")
+)
+
+# Check prediction validity
+
+stopifnot(
+  length(ann_prob) == nrow(test_x_scaled),
+  all(is.finite(ann_prob))
+)
+
+# Create prediction table
+
+ANN_pred_table <- data.frame(
+  Predicted_Probability = ann_prob,
+  Predicted_Class = ann_pred
+)
+
+cat("\n====================================\n")
+cat("NFL DRAFT PREDICTIONS\n")
+cat("====================================\n")
+
+print(head(ANN_pred_table))
+
+# ============================================================
+# STEP 11: SAVE MODEL RESULTS
+# ============================================================
+
+write.csv(
+  ann_cv,
+  "NFL_ANN_Architecture_Results.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  ANN_pred_table,
+  "NFL_ANN_Predictions.csv",
+  row.names = FALSE
+)
+
+cat("\nANN architecture search completed successfully.\n")
+```
+
+
+## **6.3 Final Model**
+
+
+
+
+
+
+
+
+
 ```{r save-results, include=FALSE}
 # Save the fitted model, tuning results, and final predictions.
 saveRDS(ann_model, "objects/ann_model.rds")
