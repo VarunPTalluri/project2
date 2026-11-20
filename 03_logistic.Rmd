@@ -18,6 +18,7 @@ test_x_raw <- readRDS("objects/test_x_raw.rds")
 train_y <- readRDS("objects/train_y.rds")
 ```
 
+
 ```{r analysis}
 library(caret)
 set.seed(12345)
@@ -46,8 +47,2085 @@ logit_test_x <- if (choice == 1) test_x_raw[, c("pos_group", "InchHeight", "wt")
 logit_prob <- as.numeric(predict(logit_model, newdata = logit_test_x, type = "prob")[, "Drafted"])
 logit_pred <- factor(ifelse(logit_prob >= 0.5, "Drafted", "Undrafted"),
                      levels = c("Undrafted", "Drafted"))
-
 ```
+
+
+## **3.1 Baseline Logistic Regression**
+
+```{r}
+logmodel <- glm(Drafted ~ ., data = train_data, family = "binomial")
+```
+
+
+```{r, echo=FALSE}
+library(broom)
+library(dplyr)
+library(gt)
+library(pscl)
+library(tibble)
+library(htmltools)
+
+# --------------------------------------------------
+# 1. Extract regression results and confidence intervals
+# --------------------------------------------------
+
+reg_results <- tidy(logmodel, conf.int = TRUE)
+
+# --------------------------------------------------
+# 2. Format regression coefficients
+# --------------------------------------------------
+
+reg_table <- reg_results %>%
+  mutate(
+    stars = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01  ~ "**",
+      p.value < 0.05  ~ "*",
+      p.value < 0.10  ~ ".",
+      TRUE ~ ""
+    ),
+
+    relationship = case_when(
+      term == "(Intercept)" ~ "",
+      estimate > 0 ~ "+",
+      estimate < 0 ~ "\u2212",
+      TRUE ~ ""
+    ),
+
+    # NFL colors for coefficients
+    coefficient_color = ifelse(
+      estimate >= 0, "#013369", "#D50A0A"
+    ),
+
+    # Stack coefficient, standard error, and CI
+    results = paste0(
+      "<span style='color:", coefficient_color,
+      "; font-weight:bold;'>",
+      sprintf("%.4f%s", estimate, stars),
+      "</span>",
+      "<br>(",
+      sprintf("%.4f", std.error),
+      ")<br>[",
+      sprintf("%.4f", conf.low),
+      ", ",
+      sprintf("%.4f", conf.high),
+      "]"
+    )
+  ) %>%
+  transmute(
+    Variables = term,
+    `Exp. Relationship` = relationship,
+    `Logistic Regression` = results
+  )
+
+# --------------------------------------------------
+# 3. Calculate model statistics
+# --------------------------------------------------
+
+n_obs <- nobs(logmodel)
+
+pseudo_r2 <- unname(
+  pscl::pR2(logmodel)["McFadden"]
+)
+
+aic_score <- AIC(logmodel)
+
+fisher_iterations <- logmodel$iter
+
+# Append model statistics at the bottom of the table
+reg_table <- bind_rows(
+  reg_table,
+
+  tibble(
+    Variables = c(
+      "n (Sample)",
+      "McFadden Pseudo-R²",
+      "AIC",
+      "Fisher Scoring Iterations"
+    ),
+
+    `Exp. Relationship` = c("", "", "", ""),
+
+    `Logistic Regression` = c(
+      format(n_obs, big.mark = ","),
+      sprintf("%.5f", pseudo_r2),
+      sprintf("%.2f", aic_score),
+      as.character(fisher_iterations)
+    )
+  )
+)
+
+# --------------------------------------------------
+# 4. Identify row positions for formatting
+# --------------------------------------------------
+
+positive_rows <- which(
+  reg_table[["Exp. Relationship"]] == "+"
+)
+
+negative_rows <- which(
+  reg_table[["Exp. Relationship"]] == "\u2212"
+)
+
+# Identify all four model statistics rows
+model_rows <- which(
+  reg_table$Variables %in% c(
+    "n (Sample)",
+    "McFadden Pseudo-R²",
+    "AIC",
+    "Fisher Scoring Iterations"
+  )
+)
+
+# --------------------------------------------------
+# 5. Create ONE unified regression table
+# --------------------------------------------------
+
+reg_gt <- gt(reg_table) %>%
+
+  # Render stacked HTML results
+  fmt_markdown(
+    columns = `Logistic Regression`
+  ) %>%
+
+  # Table title
+  tab_header(
+    title = md("**LOGISTIC REGRESSION RESULTS**")
+  ) %>%
+
+  # Column headers
+  cols_label(
+    Variables = "Variables",
+    `Exp. Relationship` = "Exp. Relationship",
+    `Logistic Regression` = "Logistic Regression"
+  ) %>%
+
+  # Center columns
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) %>%
+
+  # Column widths
+  cols_width(
+    Variables ~ px(250),
+    `Exp. Relationship` ~ px(180),
+    `Logistic Regression` ~ px(350)
+  ) %>%
+
+  # Table dimensions and borders
+  tab_options(
+    table.font.size = px(15),
+
+    heading.title.font.size = px(23),
+    heading.title.font.weight = "bold",
+
+    column_labels.background.color = "#013369",
+    column_labels.font.weight = "bold",
+
+    table.border.top.color = "#D50A0A",
+    table.border.top.width = px(4),
+
+    table.border.bottom.color = "#013369",
+    table.border.bottom.width = px(3),
+
+    table_body.hlines.color = "#CCD6E0",
+    table_body.hlines.width = px(1)
+  ) %>%
+
+  # NFL navy title
+  tab_style(
+    style = cell_text(
+      color = "#013369",
+      weight = "bold"
+    ),
+    locations = cells_title(groups = "title")
+  ) %>%
+
+  # White column header text
+  tab_style(
+    style = cell_text(
+      color = "white",
+      weight = "bold"
+    ),
+    locations = cells_column_labels(
+      columns = everything()
+    )
+  ) %>%
+
+  # Bold all variable names
+  tab_style(
+    style = cell_text(
+      weight = "bold"
+    ),
+    locations = cells_body(
+      columns = Variables
+    )
+  ) %>%
+
+  # Positive relationship indicators: NFL navy
+  tab_style(
+    style = cell_text(
+      color = "#013369",
+      weight = "bold"
+    ),
+    locations = cells_body(
+      columns = `Exp. Relationship`,
+      rows = positive_rows
+    )
+  ) %>%
+
+  # Negative relationship indicators: NFL red
+  tab_style(
+    style = cell_text(
+      color = "#D50A0A",
+      weight = "bold"
+    ),
+    locations = cells_body(
+      columns = `Exp. Relationship`,
+      rows = negative_rows
+    )
+  ) %>%
+
+  # Alternating light-blue rows
+  tab_style(
+    style = cell_fill(
+      color = "#E8EFF6"
+    ),
+    locations = cells_body(
+      rows = seq(2, nrow(reg_table), by = 2)
+    )
+  ) %>%
+
+  # Highlight all four model statistics rows
+  # This styling comes AFTER alternating row styling
+  tab_style(
+    style = list(
+      cell_fill(color = "#013369"),
+      cell_text(
+        color = "white",
+        weight = "bold"
+      )
+    ),
+    locations = cells_body(
+      rows = model_rows
+    )
+  ) %>%
+
+  # Footnote
+  tab_source_note(
+    source_note = md(
+      "Note: Logistic regression coefficients are unstandardized.
+      Standard errors are in parentheses, followed by 95% confidence
+      intervals. *** p < 0.001, ** p < 0.01, * p < 0.05,
+      . p < 0.10."
+    )
+  )
+
+# --------------------------------------------------
+# 6. Add collapsible functionality to the SAME table
+# --------------------------------------------------
+
+htmltools::tagList(
+
+  # Toggle button above the table
+  htmltools::tags$button(
+    id = "toggle-regression-variables",
+
+    type = "button",
+
+    "Show Regression Variables and Relationships",
+
+    style = paste(
+      "background: none;",
+      "border: none;",
+      "color: #013369;",
+      "font-weight: bold;",
+      "font-size: 16px;",
+      "cursor: pointer;",
+      "padding: 12px 0;",
+      "margin-bottom: 8px;"
+    ),
+
+    `aria-expanded` = "false"
+  ),
+
+  # Render the complete original table
+  htmltools::div(
+    id = "logistic-regression-table",
+
+    htmltools::HTML(
+      gt::as_raw_html(reg_gt)
+    )
+  ),
+
+  # JavaScript to hide/show only regression variables
+  htmltools::tags$script(
+    htmltools::HTML("
+      (function() {
+
+        const button = document.getElementById(
+          'toggle-regression-variables'
+        );
+
+        const container = document.getElementById(
+          'logistic-regression-table'
+        );
+
+        if (!button || !container) return;
+
+        const table = container.querySelector('table');
+
+        if (!table) return;
+
+        // These four rows must ALWAYS remain visible
+        const statsNames = [
+          'n (Sample)',
+          'McFadden Pseudo-R²',
+          'AIC',
+          'Fisher Scoring Iterations'
+        ];
+
+        // Get all body rows from the ONE table
+        const rows = Array.from(
+          table.querySelectorAll('tbody tr')
+        );
+
+        // Identify only regression-variable rows
+        const variableRows = rows.filter(row => {
+
+          const firstCell = row.querySelector('th, td');
+
+          if (!firstCell) return false;
+
+          const label = firstCell.textContent
+            .replace(/\\s+/g, ' ')
+            .trim();
+
+          return !statsNames.includes(label);
+
+        });
+
+        // Initially hide regression variables
+        variableRows.forEach(row => {
+          row.style.display = 'none';
+        });
+
+        let expanded = false;
+
+        // Toggle visibility when clicked
+        button.addEventListener('click', function() {
+
+          expanded = !expanded;
+
+          variableRows.forEach(row => {
+            row.style.display = expanded ? '' : 'none';
+          });
+
+          button.textContent = expanded
+            ? 'Hide Regression Variables and Relationships'
+            : 'Show Regression Variables and Relationships';
+
+          button.setAttribute(
+            'aria-expanded',
+            String(expanded)
+          );
+
+        });
+
+      })();
+    ")
+  )
+)
+```
+
+
+## **3.2 Logistic Regression with Linear Effects**
+
+```{r correlation_matrix, fig.width=10, fig.height=8, fig.align='center', out.width='100%', echo=FALSE}
+library(corrplot)
+
+# Select numeric variables and exclude missing indicators
+train_numeric <- train_data[, 
+  sapply(train_data, is.numeric) & 
+  !grepl("_missing$", names(train_data))
+]
+
+# Calculate correlation matrix
+cor_matrix <- cor(train_numeric,
+                  use = "pairwise.complete.obs",
+                  method = "pearson")
+
+# Display correlation matrix
+round(cor_matrix, 3)
+
+# Visualize correlation matrix
+corrplot(cor_matrix,
+         method = "color",
+         type = "upper",
+         addCoef.col = "black",
+         tl.col = "black",
+         tl.srt = 45,
+         number.cex = 0.7)
+```
+
+
+```{r}
+# Full logistic regression model with interaction effects
+
+logmodel_linear <- glm(
+  Drafted ~ . +
+
+    # ==========================================
+    # 1. POSITION-SPECIFIC INTERACTIONS
+    # ==========================================
+
+    pos_group * InchHeight +
+    # Assumption: The effect of height on draft probability
+    # differs depending on the player's position.
+
+    pos_group * wt +
+    # Assumption: The effect of weight on draft probability
+    # differs depending on the player's position.
+
+    pos_group * forty +
+    # Assumption: The effect of 40-yard dash performance
+    # differs depending on the player's position.
+
+    pos_group * vertical +
+    # Assumption: The effect of vertical jump performance
+    # differs depending on the player's position.
+
+    pos_group * bench +
+    # Assumption: The effect of upper-body strength
+    # differs depending on the player's position.
+
+    pos_group * broad_jump +
+    # Assumption: The effect of horizontal explosiveness
+    # differs depending on the player's position.
+
+    pos_group * cone +
+    # Assumption: The effect of agility performance
+    # differs depending on the player's position.
+
+    pos_group * shuttle +
+
+    # Assumption: The effect of short-distance agility
+    # differs depending on the player's position.
+
+
+    # ==========================================
+    # 2. PHYSICAL CHARACTERISTIC INTERACTIONS
+    # ==========================================
+
+    InchHeight * wt +
+    # Assumption: The combination of height and weight
+    # provides additional information about draft probability.
+
+    wt * forty +
+    # Assumption: The relationship between speed and draft
+    # probability depends on the player's weight.
+
+    wt * vertical +
+    # Assumption: The relationship between explosiveness
+    # and draft probability depends on the player's weight.
+
+    wt * bench +
+    # Assumption: The predictive importance of strength
+    # depends on the player's weight.
+
+
+    # ==========================================
+    # 3. ATHLETIC PERFORMANCE INTERACTIONS
+    # ==========================================
+
+    forty * vertical +
+    # Assumption: The combination of speed and vertical
+    # explosiveness provides additional predictive information.
+
+    forty * cone +
+    # Assumption: The relationship between straight-line
+    # speed and agility influences draft probability.
+
+    forty * shuttle, 
+    # Assumption: The combination of speed and short-distance
+    # agility provides additional predictive information.
+
+  data = train_data,
+  family = "binomial"
+)
+```
+
+
+```{r, echo=FALSE}
+# --------------------------------------------------
+# 1. Extract regression results and confidence intervals
+# --------------------------------------------------
+
+reg_results <- tidy(logmodel_linear, conf.int = TRUE)
+
+# --------------------------------------------------
+# 2. Format regression coefficients
+# --------------------------------------------------
+
+reg_table <- reg_results %>%
+  mutate(
+    stars = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01  ~ "**",
+      p.value < 0.05  ~ "*",
+      p.value < 0.10  ~ ".",
+      TRUE ~ ""
+    ),
+
+    relationship = case_when(
+      term == "(Intercept)" ~ "",
+      estimate > 0 ~ "+",
+      estimate < 0 ~ "\u2212",
+      TRUE ~ ""
+    ),
+
+    # NFL colors for coefficients
+    coefficient_color = ifelse(
+      estimate >= 0, "#013369", "#D50A0A"
+    ),
+
+    # Stack coefficient, standard error, and CI
+    results = paste0(
+      "<span style='color:", coefficient_color,
+      "; font-weight:bold;'>",
+      sprintf("%.4f%s", estimate, stars),
+      "</span>",
+      "<br>(",
+      sprintf("%.4f", std.error),
+      ")<br>[",
+      sprintf("%.4f", conf.low),
+      ", ",
+      sprintf("%.4f", conf.high),
+      "]"
+    )
+  ) %>%
+  transmute(
+    Variables = term,
+    `Exp. Relationship` = relationship,
+    `Logistic Regression` = results
+  )
+
+# --------------------------------------------------
+# 3. Calculate model statistics
+# --------------------------------------------------
+
+n_obs <- nobs(logmodel_linear)
+
+pseudo_r2 <- unname(
+  pscl::pR2(logmodel_linear)["McFadden"]
+)
+
+aic_score <- AIC(logmodel_linear)
+
+fisher_iterations <- logmodel_linear$iter
+
+# Append model statistics at the bottom
+reg_table <- bind_rows(
+  reg_table,
+
+  tibble(
+    Variables = c(
+      "n (Sample)",
+      "McFadden Pseudo-R²",
+      "AIC",
+      "Fisher Scoring Iterations"
+    ),
+
+    `Exp. Relationship` = c("", "", "", ""),
+
+    `Logistic Regression` = c(
+      format(n_obs, big.mark = ","),
+      sprintf("%.5f", pseudo_r2),
+      sprintf("%.2f", aic_score),
+      as.character(fisher_iterations)
+    )
+  )
+)
+
+# --------------------------------------------------
+# 4. Identify row positions for formatting
+# --------------------------------------------------
+
+positive_rows <- which(
+  reg_table[["Exp. Relationship"]] == "+"
+)
+
+negative_rows <- which(
+  reg_table[["Exp. Relationship"]] == "\u2212"
+)
+
+# Identify all four model statistics rows
+model_rows <- which(
+  reg_table$Variables %in% c(
+    "n (Sample)",
+    "McFadden Pseudo-R²",
+    "AIC",
+    "Fisher Scoring Iterations"
+  )
+)
+
+# --------------------------------------------------
+# 5. Create ONE unified regression table
+# --------------------------------------------------
+
+reg_gt_linear <- gt(reg_table) %>%
+
+  # Render stacked HTML results
+  fmt_markdown(
+    columns = `Logistic Regression`
+  ) %>%
+
+  # Table title
+  tab_header(
+    title = md("**LOGISTIC REGRESSION — LINEAR MODEL**")
+  ) %>%
+
+  # Column headers
+  cols_label(
+    Variables = "Variables",
+    `Exp. Relationship` = "Exp. Relationship",
+    `Logistic Regression` = "Logistic Regression"
+  ) %>%
+
+  # Center columns
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) %>%
+
+  # Column widths
+  cols_width(
+    Variables ~ px(250),
+    `Exp. Relationship` ~ px(180),
+    `Logistic Regression` ~ px(350)
+  ) %>%
+
+  # Table dimensions and borders
+  tab_options(
+    table.font.size = px(15),
+
+    heading.title.font.size = px(23),
+    heading.title.font.weight = "bold",
+
+    column_labels.background.color = "#013369",
+    column_labels.font.weight = "bold",
+
+    table.border.top.color = "#D50A0A",
+    table.border.top.width = px(4),
+
+    table.border.bottom.color = "#013369",
+    table.border.bottom.width = px(3),
+
+    table_body.hlines.color = "#CCD6E0",
+    table_body.hlines.width = px(1)
+  ) %>%
+
+  # NFL navy title
+  tab_style(
+    style = cell_text(
+      color = "#013369",
+      weight = "bold"
+    ),
+    locations = cells_title(groups = "title")
+  ) %>%
+
+  # White column header text
+  tab_style(
+    style = cell_text(
+      color = "white",
+      weight = "bold"
+    ),
+    locations = cells_column_labels(
+      columns = everything()
+    )
+  ) %>%
+
+  # Bold all variable names
+  tab_style(
+    style = cell_text(
+      weight = "bold"
+    ),
+    locations = cells_body(
+      columns = Variables
+    )
+  ) %>%
+
+  # Positive relationship indicators: NFL navy
+  tab_style(
+    style = cell_text(
+      color = "#013369",
+      weight = "bold"
+    ),
+    locations = cells_body(
+      columns = `Exp. Relationship`,
+      rows = positive_rows
+    )
+  ) %>%
+
+  # Negative relationship indicators: NFL red
+  tab_style(
+    style = cell_text(
+      color = "#D50A0A",
+      weight = "bold"
+    ),
+    locations = cells_body(
+      columns = `Exp. Relationship`,
+      rows = negative_rows
+    )
+  ) %>%
+
+  # Alternating light-blue rows
+  tab_style(
+    style = cell_fill(
+      color = "#E8EFF6"
+    ),
+    locations = cells_body(
+      rows = seq(2, nrow(reg_table), by = 2)
+    )
+  ) %>%
+
+  # Highlight all four model statistics rows
+  tab_style(
+    style = list(
+      cell_fill(color = "#013369"),
+      cell_text(
+        color = "white",
+        weight = "bold"
+      )
+    ),
+    locations = cells_body(
+      rows = model_rows
+    )
+  ) %>%
+
+  # Footnote
+  tab_source_note(
+    source_note = md(
+      "Note: Logistic regression coefficients are unstandardized.
+      Standard errors are in parentheses, followed by 95% confidence
+      intervals. *** p < 0.001, ** p < 0.01, * p < 0.05,
+      . p < 0.10."
+    )
+  )
+
+# --------------------------------------------------
+# 6. Add collapsible functionality to the SAME table
+# --------------------------------------------------
+
+htmltools::tagList(
+
+  # Toggle button above the table
+  htmltools::tags$button(
+    id = "toggle-regression-linear",
+
+    type = "button",
+
+    "Show Regression Variables and Relationships",
+
+    style = paste(
+      "background: none;",
+      "border: none;",
+      "color: #013369;",
+      "font-weight: bold;",
+      "font-size: 16px;",
+      "cursor: pointer;",
+      "padding: 12px 0;",
+      "margin-bottom: 8px;"
+    ),
+
+    `aria-expanded` = "false"
+  ),
+
+  # Render the complete unified table
+  htmltools::div(
+    id = "regression-table-linear",
+
+    htmltools::HTML(
+      gt::as_raw_html(reg_gt_linear)
+    )
+  ),
+
+  # JavaScript: hide/show only regression variables
+  htmltools::tags$script(
+    htmltools::HTML("
+      (function() {
+
+        const button = document.getElementById(
+          'toggle-regression-linear'
+        );
+
+        const container = document.getElementById(
+          'regression-table-linear'
+        );
+
+        if (!button || !container) return;
+
+        const table = container.querySelector('table');
+
+        if (!table) return;
+
+        // These four rows must always remain visible
+        const statsNames = [
+          'n (Sample)',
+          'McFadden Pseudo-R²',
+          'AIC',
+          'Fisher Scoring Iterations'
+        ];
+
+        const rows = Array.from(
+          table.querySelectorAll('tbody tr')
+        );
+
+        // Identify regression-variable rows
+        const variableRows = rows.filter(row => {
+
+          const firstCell = row.querySelector('th, td');
+
+          if (!firstCell) return false;
+
+          const label = firstCell.textContent
+            .replace(/\\s+/g, ' ')
+            .trim();
+
+          return !statsNames.includes(label);
+
+        });
+
+        // Initially hide regression variables
+        variableRows.forEach(row => {
+          row.style.display = 'none';
+        });
+
+        let expanded = false;
+
+        button.addEventListener('click', function() {
+
+          expanded = !expanded;
+
+          variableRows.forEach(row => {
+            row.style.display = expanded ? '' : 'none';
+          });
+
+          button.textContent = expanded
+            ? 'Hide Regression Variables and Relationships'
+            : 'Show Regression Variables and Relationships';
+
+          button.setAttribute(
+            'aria-expanded',
+            String(expanded)
+          );
+
+        });
+
+      })();
+    ")
+  )
+)
+```
+
+
+
+
+## **3.3 Logistic Regression with Nonlinear Effects** 
+
+```{r}
+# Full logistic regression model with interaction effects
+
+logmodel_nonlinear <- glm(
+  Drafted ~ . +
+    
+    # ==========================================
+    # 4. NON-LINEAR EFFECTS (SQUARED TERMS)
+    # ==========================================
+
+    I(InchHeight^2) +
+    # Assumption: Height has a potentially curved relationship with draft probability.
+
+    I(wt^2) +
+    # Assumption: There may be an optimal weight range for draft selection.
+
+    I(forty^2) +
+    # Assumption: The relationship between speed and draft probability is non-linear.
+
+    I(vertical^2) +
+    # Assumption: The effect of vertical explosiveness may have diminishing returns.
+
+    I(bench^2) +
+    # Assumption: The effect of strength may have diminishing returns.
+
+    I(broad_jump^2) +
+    # Assumption: The relationship between horizontal explosiveness and draft probability is non-linear.
+
+    I(cone^2) +
+    # Assumption: The effect of agility may be non-linear.
+
+    I(shuttle^2),
+    # Assumption: The effect of short-distance agility may be non-linear.
+
+
+  data = train_data,
+  family = "binomial"
+)
+```
+
+```{r, echo=FALSE}
+# --------------------------------------------------
+# 1. Extract regression results and confidence intervals
+# --------------------------------------------------
+
+reg_results <- tidy(logmodel_nonlinear, conf.int = TRUE)
+
+# --------------------------------------------------
+# 2. Format regression coefficients
+# --------------------------------------------------
+
+reg_table <- reg_results %>%
+  mutate(
+    stars = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01  ~ "**",
+      p.value < 0.05  ~ "*",
+      p.value < 0.10  ~ ".",
+      TRUE ~ ""
+    ),
+
+    relationship = case_when(
+      term == "(Intercept)" ~ "",
+      estimate > 0 ~ "+",
+      estimate < 0 ~ "\u2212",
+      TRUE ~ ""
+    ),
+
+    # NFL colors for coefficients
+    coefficient_color = ifelse(
+      estimate >= 0, "#013369", "#D50A0A"
+    ),
+
+    # Stack coefficient, standard error, and CI
+    results = paste0(
+      "<span style='color:", coefficient_color,
+      "; font-weight:bold;'>",
+      sprintf("%.4f%s", estimate, stars),
+      "</span>",
+      "<br>(",
+      sprintf("%.4f", std.error),
+      ")<br>[",
+      sprintf("%.4f", conf.low),
+      ", ",
+      sprintf("%.4f", conf.high),
+      "]"
+    )
+  ) %>%
+  transmute(
+    Variables = term,
+    `Exp. Relationship` = relationship,
+    `Logistic Regression` = results
+  )
+
+# --------------------------------------------------
+# 3. Calculate model statistics
+# --------------------------------------------------
+
+n_obs <- nobs(logmodel_nonlinear)
+
+pseudo_r2 <- unname(
+  pscl::pR2(logmodel_nonlinear)["McFadden"]
+)
+
+aic_score <- AIC(logmodel_nonlinear)
+
+fisher_iterations <- logmodel_nonlinear$iter
+
+# Append model statistics at the bottom
+reg_table <- bind_rows(
+  reg_table,
+
+  tibble(
+    Variables = c(
+      "n (Sample)",
+      "McFadden Pseudo-R²",
+      "AIC",
+      "Fisher Scoring Iterations"
+    ),
+
+    `Exp. Relationship` = c("", "", "", ""),
+
+    `Logistic Regression` = c(
+      format(n_obs, big.mark = ","),
+      sprintf("%.5f", pseudo_r2),
+      sprintf("%.2f", aic_score),
+      as.character(fisher_iterations)
+    )
+  )
+)
+
+# --------------------------------------------------
+# 4. Identify row positions for formatting
+# --------------------------------------------------
+
+positive_rows <- which(
+  reg_table[["Exp. Relationship"]] == "+"
+)
+
+negative_rows <- which(
+  reg_table[["Exp. Relationship"]] == "\u2212"
+)
+
+model_rows <- which(
+  reg_table$Variables %in% c(
+    "n (Sample)",
+    "McFadden Pseudo-R²",
+    "AIC",
+    "Fisher Scoring Iterations"
+  )
+)
+
+# --------------------------------------------------
+# 5. Create ONE unified regression table
+# --------------------------------------------------
+
+reg_gt_nonlinear <- gt(reg_table) %>%
+
+  fmt_markdown(
+    columns = `Logistic Regression`
+  ) %>%
+
+  # Table title
+  tab_header(
+    title = md("**LOGISTIC REGRESSION — NONLINEAR MODEL**")
+  ) %>%
+
+  # Column headers
+  cols_label(
+    Variables = "Variables",
+    `Exp. Relationship` = "Exp. Relationship",
+    `Logistic Regression` = "Logistic Regression"
+  ) %>%
+
+  # Center columns
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) %>%
+
+  # Column widths
+  cols_width(
+    Variables ~ px(250),
+    `Exp. Relationship` ~ px(180),
+    `Logistic Regression` ~ px(350)
+  ) %>%
+
+  # Table dimensions and borders
+  tab_options(
+    table.font.size = px(15),
+
+    heading.title.font.size = px(23),
+    heading.title.font.weight = "bold",
+
+    column_labels.background.color = "#013369",
+    column_labels.font.weight = "bold",
+
+    table.border.top.color = "#D50A0A",
+    table.border.top.width = px(4),
+
+    table.border.bottom.color = "#013369",
+    table.border.bottom.width = px(3),
+
+    table_body.hlines.color = "#CCD6E0",
+    table_body.hlines.width = px(1)
+  ) %>%
+
+  # NFL navy title
+  tab_style(
+    style = cell_text(
+      color = "#013369",
+      weight = "bold"
+    ),
+    locations = cells_title(groups = "title")
+  ) %>%
+
+  # White column header text
+  tab_style(
+    style = cell_text(
+      color = "white",
+      weight = "bold"
+    ),
+    locations = cells_column_labels(
+      columns = everything()
+    )
+  ) %>%
+
+  # Bold variable names
+  tab_style(
+    style = cell_text(
+      weight = "bold"
+    ),
+    locations = cells_body(
+      columns = Variables
+    )
+  ) %>%
+
+  # Positive relationship indicators: NFL navy
+  tab_style(
+    style = cell_text(
+      color = "#013369",
+      weight = "bold"
+    ),
+    locations = cells_body(
+      columns = `Exp. Relationship`,
+      rows = positive_rows
+    )
+  ) %>%
+
+  # Negative relationship indicators: NFL red
+  tab_style(
+    style = cell_text(
+      color = "#D50A0A",
+      weight = "bold"
+    ),
+    locations = cells_body(
+      columns = `Exp. Relationship`,
+      rows = negative_rows
+    )
+  ) %>%
+
+  # Alternating light-blue rows
+  tab_style(
+    style = cell_fill(
+      color = "#E8EFF6"
+    ),
+    locations = cells_body(
+      rows = seq(2, nrow(reg_table), by = 2)
+    )
+  ) %>%
+
+  # Highlight all four model statistics rows
+  tab_style(
+    style = list(
+      cell_fill(color = "#013369"),
+      cell_text(
+        color = "white",
+        weight = "bold"
+      )
+    ),
+    locations = cells_body(
+      rows = model_rows
+    )
+  ) %>%
+
+  # Footnote
+  tab_source_note(
+    source_note = md(
+      "Note: Logistic regression coefficients are unstandardized.
+      Standard errors are in parentheses, followed by 95% confidence
+      intervals. *** p < 0.001, ** p < 0.01, * p < 0.05,
+      . p < 0.10."
+    )
+  )
+
+# --------------------------------------------------
+# 6. Add collapsible functionality to the SAME table
+# --------------------------------------------------
+
+htmltools::tagList(
+
+  # Toggle button
+  htmltools::tags$button(
+    id = "toggle-regression-nonlinear",
+
+    type = "button",
+
+    "Show Regression Variables and Relationships",
+
+    style = paste(
+      "background: none;",
+      "border: none;",
+      "color: #013369;",
+      "font-weight: bold;",
+      "font-size: 16px;",
+      "cursor: pointer;",
+      "padding: 12px 0;",
+      "margin-bottom: 8px;"
+    ),
+
+    `aria-expanded` = "false"
+  ),
+
+  # Render the complete unified table
+  htmltools::div(
+    id = "regression-table-nonlinear",
+
+    htmltools::HTML(
+      gt::as_raw_html(reg_gt_nonlinear)
+    )
+  ),
+
+  # JavaScript: hide/show only regression variables
+  htmltools::tags$script(
+    htmltools::HTML("
+      (function() {
+
+        const button = document.getElementById(
+          'toggle-regression-nonlinear'
+        );
+
+        const container = document.getElementById(
+          'regression-table-nonlinear'
+        );
+
+        if (!button || !container) return;
+
+        const table = container.querySelector('table');
+
+        if (!table) return;
+
+        // These four rows must always remain visible
+        const statsNames = [
+          'n (Sample)',
+          'McFadden Pseudo-R²',
+          'AIC',
+          'Fisher Scoring Iterations'
+        ];
+
+        const rows = Array.from(
+          table.querySelectorAll('tbody tr')
+        );
+
+        // Identify regression-variable rows
+        const variableRows = rows.filter(row => {
+
+          const firstCell = row.querySelector('th, td');
+
+          if (!firstCell) return false;
+
+          const label = firstCell.textContent
+            .replace(/\\s+/g, ' ')
+            .trim();
+
+          return !statsNames.includes(label);
+
+        });
+
+        // Initially hide regression variables
+        variableRows.forEach(row => {
+          row.style.display = 'none';
+        });
+
+        let expanded = false;
+
+        button.addEventListener('click', function() {
+
+          expanded = !expanded;
+
+          variableRows.forEach(row => {
+            row.style.display = expanded ? '' : 'none';
+          });
+
+          button.textContent = expanded
+            ? 'Hide Regression Variables and Relationships'
+            : 'Show Regression Variables and Relationships';
+
+          button.setAttribute(
+            'aria-expanded',
+            String(expanded)
+          );
+
+        });
+
+      })();
+    ")
+  )
+)
+```
+
+
+## **3.4 Final Model Selection: Backward AIC**
+
+```{r, echo=FALSE}
+library(dplyr)
+
+# Variables to center
+continuous_vars <- c(
+  "season",
+  "InchHeight",
+  "wt",
+  "forty",
+  "vertical",
+  "bench",
+  "broad_jump",
+  "cone",
+  "shuttle"
+)
+
+# Calculate means from training data only
+center_means <- sapply(
+  train_data[continuous_vars],
+  mean,
+  na.rm = TRUE
+)
+
+# Center training and test data
+for (v in continuous_vars) {
+
+  train_data[[paste0(v, "_c")]] <-
+    train_data[[v]] - center_means[[v]]
+
+  test_data[[paste0(v, "_c")]] <-
+    test_data[[v]] - center_means[[v]]
+}
+
+# Check that variables have been created
+names(train_data)
+names(test_data)
+```
+
+
+```{r}
+Model_full <- glm(
+
+  Drafted ~
+
+    # ----------------------------------------
+    # 1. MAIN EFFECTS
+    # ----------------------------------------
+
+    season_c +
+    pos_group +
+
+    InchHeight_c +
+    wt_c +
+    forty_c +
+    vertical_c +
+    bench_c +
+    broad_jump_c +
+    cone_c +
+    shuttle_c +
+
+    # Missingness indicators
+    InchHeight_missing +
+    wt_missing +
+    forty_missing +
+    vertical_missing +
+    bench_missing +
+    broad_jump_missing +
+    cone_missing +
+    shuttle_missing +
+
+
+    # ----------------------------------------
+    # 2. POSITION-SPECIFIC INTERACTIONS
+    # ----------------------------------------
+
+    pos_group:InchHeight_c +
+    # Height has different importance across positions.
+
+    pos_group:wt_c +
+    # Optimal weight requirements differ across positions.
+
+    pos_group:forty_c +
+    # The importance of speed differs across positions.
+
+    pos_group:vertical_c +
+    # Vertical explosiveness matters differently across positions.
+
+    pos_group:bench_c +
+    # Strength requirements differ across positions.
+
+    pos_group:broad_jump_c +
+    # Horizontal explosiveness matters differently across positions.
+
+    pos_group:cone_c +
+    # Agility requirements differ across positions.
+
+    pos_group:shuttle_c +
+    # Short-distance agility matters differently across positions.
+
+
+    # ----------------------------------------
+    # 3. PHYSICAL CHARACTERISTIC INTERACTIONS
+    # ----------------------------------------
+
+    InchHeight_c:wt_c +
+    # The combination of height and weight matters.
+
+    wt_c:forty_c +
+    # The relationship between weight and speed matters.
+
+    wt_c:vertical_c +
+    # Explosiveness depends partly on body weight.
+
+    wt_c:bench_c +
+    # The value of strength may depend on body weight.
+
+
+    # ----------------------------------------
+    # 4. ATHLETIC PERFORMANCE INTERACTIONS
+    # ----------------------------------------
+
+    forty_c:cone_c +
+    # Straight-line speed and agility jointly influence selection.
+
+    forty_c:shuttle_c +
+    # Speed and short-distance agility jointly influence selection.
+
+
+    # ----------------------------------------
+    # 5. SEASON-SPECIFIC INTERACTIONS
+    # ----------------------------------------
+
+    season_c:forty_c +
+    # The importance of speed may change over time.
+
+    season_c:vertical_c +
+    # The importance of vertical explosiveness may change over time.
+
+    season_c:wt_c +
+    # The importance of weight may change over time.
+
+    season_c:InchHeight_c +
+    # The importance of height may change over time.
+
+
+    # ----------------------------------------
+    # 6. NON-LINEAR EFFECTS (QUADRATIC)
+    # ----------------------------------------
+
+    I(InchHeight_c^2) +
+    # Potential optimal height range.
+
+    I(wt_c^2) +
+    # Potential optimal weight range.
+
+    I(forty_c^2) +
+    # Non-linear relationship between speed and draft probability.
+
+    I(vertical_c^2) +
+    # Potential diminishing returns from vertical explosiveness.
+
+    I(bench_c^2) +
+    # Potential diminishing returns from strength.
+
+    I(broad_jump_c^2) +
+    # Non-linear relationship with horizontal explosiveness.
+
+    I(cone_c^2) +
+    # Non-linear relationship with agility.
+
+    I(shuttle_c^2),
+    # Non-linear relationship with short-distance agility.
+
+
+  data = train_data,
+
+  family = binomial(link = "logit")
+)
+```
+
+```{r}
+Model <- step(Model_full, direction="backward", trace=0)
+```
+
+
+```{r, echo=FALSE}
+# --------------------------------------------------
+# 1. Extract regression results and confidence intervals
+# --------------------------------------------------
+
+reg_results <- tidy(Model, conf.int = TRUE)
+
+# --------------------------------------------------
+# 2. Format regression coefficients
+# --------------------------------------------------
+
+reg_table <- reg_results %>%
+  mutate(
+    stars = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01  ~ "**",
+      p.value < 0.05  ~ "*",
+      p.value < 0.10  ~ ".",
+      TRUE ~ ""
+    ),
+
+    relationship = case_when(
+      term == "(Intercept)" ~ "",
+      estimate > 0 ~ "+",
+      estimate < 0 ~ "\u2212",
+      TRUE ~ ""
+    ),
+
+    # NFL colors for coefficients
+    coefficient_color = ifelse(
+      estimate >= 0, "#013369", "#D50A0A"
+    ),
+
+    # Stack coefficient, standard error, and CI
+    results = paste0(
+      "<span style='color:", coefficient_color,
+      "; font-weight:bold;'>",
+      sprintf("%.4f%s", estimate, stars),
+      "</span>",
+      "<br>(",
+      sprintf("%.4f", std.error),
+      ")<br>[",
+      sprintf("%.4f", conf.low),
+      ", ",
+      sprintf("%.4f", conf.high),
+      "]"
+    )
+  ) %>%
+  transmute(
+    Variables = term,
+    `Exp. Relationship` = relationship,
+    `Logistic Regression` = results
+  )
+
+# --------------------------------------------------
+# 3. Calculate model statistics
+# --------------------------------------------------
+
+n_obs <- nobs(Model)
+
+pseudo_r2 <- unname(
+  pscl::pR2(Model)["McFadden"]
+)
+
+aic_score <- AIC(Model)
+
+fisher_iterations <- Model$iter
+
+# Append model statistics at the bottom
+reg_table <- bind_rows(
+  reg_table,
+
+  tibble(
+    Variables = c(
+      "n (Sample)",
+      "McFadden Pseudo-R²",
+      "AIC",
+      "Fisher Scoring Iterations"
+    ),
+
+    `Exp. Relationship` = c("", "", "", ""),
+
+    `Logistic Regression` = c(
+      format(n_obs, big.mark = ","),
+      sprintf("%.5f", pseudo_r2),
+      sprintf("%.2f", aic_score),
+      as.character(fisher_iterations)
+    )
+  )
+)
+
+# --------------------------------------------------
+# 4. Identify row positions for formatting
+# --------------------------------------------------
+
+positive_rows <- which(
+  reg_table[["Exp. Relationship"]] == "+"
+)
+
+negative_rows <- which(
+  reg_table[["Exp. Relationship"]] == "\u2212"
+)
+
+# Identify all four model statistics rows
+model_rows <- which(
+  reg_table$Variables %in% c(
+    "n (Sample)",
+    "McFadden Pseudo-R²",
+    "AIC",
+    "Fisher Scoring Iterations"
+  )
+)
+
+# --------------------------------------------------
+# 5. Create ONE unified regression table
+# --------------------------------------------------
+
+reg_gt_final <- gt(reg_table) %>%
+
+  # Render stacked HTML results
+  fmt_markdown(
+    columns = `Logistic Regression`
+  ) %>%
+
+  # Table title
+  tab_header(
+    title = md("**LOGISTIC REGRESSION — FINAL SELECTED MODEL**")
+  ) %>%
+
+  # Column headers
+  cols_label(
+    Variables = "Variables",
+    `Exp. Relationship` = "Exp. Relationship",
+    `Logistic Regression` = "Logistic Regression"
+  ) %>%
+
+  # Center columns
+  cols_align(
+    align = "center",
+    columns = everything()
+  ) %>%
+
+  # Column widths
+  cols_width(
+    Variables ~ px(250),
+    `Exp. Relationship` ~ px(180),
+    `Logistic Regression` ~ px(350)
+  ) %>%
+
+  # Table dimensions and borders
+  tab_options(
+    table.font.size = px(15),
+
+    heading.title.font.size = px(23),
+    heading.title.font.weight = "bold",
+
+    column_labels.background.color = "#013369",
+    column_labels.font.weight = "bold",
+
+    table.border.top.color = "#D50A0A",
+    table.border.top.width = px(4),
+
+    table.border.bottom.color = "#013369",
+    table.border.bottom.width = px(3),
+
+    table_body.hlines.color = "#CCD6E0",
+    table_body.hlines.width = px(1)
+  ) %>%
+
+  # NFL navy title
+  tab_style(
+    style = cell_text(
+      color = "#013369",
+      weight = "bold"
+    ),
+    locations = cells_title(groups = "title")
+  ) %>%
+
+  # White column header text
+  tab_style(
+    style = cell_text(
+      color = "white",
+      weight = "bold"
+    ),
+    locations = cells_column_labels(
+      columns = everything()
+    )
+  ) %>%
+
+  # Bold all variable names
+  tab_style(
+    style = cell_text(
+      weight = "bold"
+    ),
+    locations = cells_body(
+      columns = Variables
+    )
+  ) %>%
+
+  # Positive relationship indicators: NFL navy
+  tab_style(
+    style = cell_text(
+      color = "#013369",
+      weight = "bold"
+    ),
+    locations = cells_body(
+      columns = `Exp. Relationship`,
+      rows = positive_rows
+    )
+  ) %>%
+
+  # Negative relationship indicators: NFL red
+  tab_style(
+    style = cell_text(
+      color = "#D50A0A",
+      weight = "bold"
+    ),
+    locations = cells_body(
+      columns = `Exp. Relationship`,
+      rows = negative_rows
+    )
+  ) %>%
+
+  # Alternating light-blue rows
+  tab_style(
+    style = cell_fill(
+      color = "#E8EFF6"
+    ),
+    locations = cells_body(
+      rows = seq(2, nrow(reg_table), by = 2)
+    )
+  ) %>%
+
+  # Highlight all four model statistics rows
+  tab_style(
+    style = list(
+      cell_fill(color = "#013369"),
+      cell_text(
+        color = "white",
+        weight = "bold"
+      )
+    ),
+    locations = cells_body(
+      rows = model_rows
+    )
+  ) %>%
+
+  # Footnote
+  tab_source_note(
+    source_note = md(
+      "Note: Logistic regression coefficients are unstandardized.
+      Standard errors are in parentheses, followed by 95% confidence
+      intervals. *** p < 0.001, ** p < 0.01, * p < 0.05,
+      . p < 0.10."
+    )
+  )
+
+# --------------------------------------------------
+# 6. Add collapsible functionality to the SAME table
+# --------------------------------------------------
+
+htmltools::tagList(
+
+  # Toggle button
+  htmltools::tags$button(
+    id = "toggle-regression-final",
+
+    type = "button",
+
+    "Show Regression Variables and Relationships",
+
+    style = paste(
+      "background: none;",
+      "border: none;",
+      "color: #013369;",
+      "font-weight: bold;",
+      "font-size: 16px;",
+      "cursor: pointer;",
+      "padding: 12px 0;",
+      "margin-bottom: 8px;"
+    ),
+
+    `aria-expanded` = "false"
+  ),
+
+  # Render the complete unified table
+  htmltools::div(
+    id = "regression-table-final",
+
+    htmltools::HTML(
+      gt::as_raw_html(reg_gt_final)
+    )
+  ),
+
+  # JavaScript: hide/show only regression variables
+  htmltools::tags$script(
+    htmltools::HTML("
+      (function() {
+
+        const button = document.getElementById(
+          'toggle-regression-final'
+        );
+
+        const container = document.getElementById(
+          'regression-table-final'
+        );
+
+        if (!button || !container) return;
+
+        const table = container.querySelector('table');
+
+        if (!table) return;
+
+        // These four rows must always remain visible
+        const statsNames = [
+          'n (Sample)',
+          'McFadden Pseudo-R²',
+          'AIC',
+          'Fisher Scoring Iterations'
+        ];
+
+        const rows = Array.from(
+          table.querySelectorAll('tbody tr')
+        );
+
+        // Identify regression-variable rows
+        const variableRows = rows.filter(row => {
+
+          const firstCell = row.querySelector('th, td');
+
+          if (!firstCell) return false;
+
+          const label = firstCell.textContent
+            .replace(/\\s+/g, ' ')
+            .trim();
+
+          return !statsNames.includes(label);
+
+        });
+
+        // Initially hide regression variables
+        variableRows.forEach(row => {
+          row.style.display = 'none';
+        });
+
+        let expanded = false;
+
+        button.addEventListener('click', function() {
+
+          expanded = !expanded;
+
+          variableRows.forEach(row => {
+            row.style.display = expanded ? '' : 'none';
+          });
+
+          button.textContent = expanded
+            ? 'Hide Regression Variables and Relationships'
+            : 'Show Regression Variables and Relationships';
+
+          button.setAttribute(
+            'aria-expanded',
+            String(expanded)
+          );
+
+        });
+
+      })();
+    ")
+  )
+)
+```
+
+## **3.5 Predicting Test Data**
+
+### *3.5.1 Cross-Validation for Optimal Classification Threshold*
+
+```{r, echo=FALSE}
+library(caret)
+library(pROC)
+library(dplyr)
+
+# Ensure correct outcome coding
+train_data$Drafted <- factor(
+  ifelse(
+    as.character(train_data$Drafted) %in% c("1", "Drafted"),
+    "Drafted",
+    "Undrafted"
+  ),
+  levels = c("Undrafted", "Drafted")
+)
+
+# Five-fold cross-validation
+ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  classProbs = TRUE,
+  savePredictions = "final",
+  summaryFunction = defaultSummary
+)
+
+set.seed(12345)
+
+# Estimate logistic regression
+cv_model <- train(
+  formula(Model),
+  data = train_data,
+  method = "glm",
+  family = binomial(),
+  metric = "Kappa",
+  trControl = ctrl
+)
+
+# Average performance across the five folds
+cv_model$results[, c("Accuracy", "Kappa")]
+
+# Extract out-of-fold predictions
+cv_predictions <- cv_model$pred
+
+# Candidate thresholds
+thresholds <- seq(0.05, 0.95, by = 0.01)
+
+# Evaluate each threshold
+threshold_results <- lapply(thresholds, function(t) {
+
+  predictions <- factor(
+    ifelse(
+      cv_predictions$Drafted >= t,
+      "Drafted",
+      "Undrafted"
+    ),
+    levels = c("Undrafted", "Drafted")
+  )
+
+  actual <- factor(
+    cv_predictions$obs,
+    levels = c("Undrafted", "Drafted")
+  )
+
+  cm <- confusionMatrix(
+    predictions,
+    actual,
+    positive = "Drafted"
+  )
+
+  data.frame(
+    Threshold = t,
+    Accuracy = unname(cm$overall["Accuracy"]),
+    Kappa = unname(cm$overall["Kappa"]),
+    Sensitivity = unname(cm$byClass["Sensitivity"]),
+    Specificity = unname(cm$byClass["Specificity"])
+  )
+})
+
+threshold_results <- bind_rows(threshold_results)
+
+# Find optimal thresholds
+best_accuracy <- threshold_results[
+  which.max(threshold_results$Accuracy), ]
+
+best_kappa <- threshold_results[
+  which.max(threshold_results$Kappa), ]
+
+# Remove unseen position category
+test_data_filtered <- test_data %>%
+  filter(as.character(pos_group) != "Other")
+
+# Align factor levels
+test_data_filtered$pos_group <- factor(
+  as.character(test_data_filtered$pos_group),
+  levels = levels(train_data$pos_group)
+)
+
+stopifnot(!anyNA(test_data_filtered$pos_group))
+
+# Generate predicted probabilities
+test_prob <- predict(
+  cv_model,
+  newdata = test_data_filtered,
+  type = "prob"
+)[, "Drafted"]
+
+# Actual outcomes
+actual_test <- factor(
+  ifelse(test_data_filtered$Drafted == 1, "Drafted", "Undrafted"),
+  levels = c("Undrafted", "Drafted")
+)
+
+# Standard threshold
+pred_standard <- factor(
+  ifelse(test_prob >= 0.50, "Drafted", "Undrafted"),
+  levels = c("Undrafted", "Drafted")
+)
+
+# Accuracy-optimized threshold
+pred_accuracy <- factor(
+  ifelse(test_prob >= best_accuracy$Threshold, "Drafted", "Undrafted"),
+  levels = c("Undrafted", "Drafted")
+)
+
+# Kappa-optimized threshold
+pred_kappa <- factor(
+  ifelse(test_prob >= best_kappa$Threshold, "Drafted", "Undrafted"),
+  levels = c("Undrafted", "Drafted")
+)
+
+# Confusion matrices
+cm_standard <- confusionMatrix(
+  pred_standard, actual_test, positive = "Drafted"
+)
+
+cm_accuracy <- confusionMatrix(
+  pred_accuracy, actual_test, positive = "Drafted"
+)
+
+cm_kappa <- confusionMatrix(
+  pred_kappa, actual_test, positive = "Drafted"
+)
+
+# Comparison table
+final_comparison <- data.frame(
+  Method = c(
+    "Standard (0.50)",
+    "CV Accuracy optimal",
+    "CV Kappa optimal"
+  ),
+
+  Threshold = c(
+    0.50,
+    best_accuracy$Threshold,
+    best_kappa$Threshold
+  ),
+
+  Accuracy = c(
+    cm_standard$overall["Accuracy"],
+    cm_accuracy$overall["Accuracy"],
+    cm_kappa$overall["Accuracy"]
+  ),
+
+  Kappa = c(
+    cm_standard$overall["Kappa"],
+    cm_accuracy$overall["Kappa"],
+    cm_kappa$overall["Kappa"]
+  ),
+
+  Sensitivity = c(
+    cm_standard$byClass["Sensitivity"],
+    cm_accuracy$byClass["Sensitivity"],
+    cm_kappa$byClass["Sensitivity"]
+  ),
+
+  Specificity = c(
+    cm_standard$byClass["Specificity"],
+    cm_accuracy$byClass["Specificity"],
+    cm_kappa$byClass["Specificity"]
+  )
+)
+
+# Round results
+final_comparison[-1] <- lapply(
+  final_comparison[-1],
+  function(x) round(as.numeric(x), 4)
+)
+
+print(final_comparison)
+```
+
+### *3.5.2 Final Predictive Model*
+
+```{r, echo=FALSE}
+# Generate binary predictions using the selected threshold
+final_predictions <- ifelse(
+  test_prob >= best_kappa$Threshold,
+  1,
+  0
+)
+
+# Actual outcomes
+final_actual <- ifelse(
+  actual_test == "Drafted",
+  1,
+  0
+)
+
+# Final confusion matrix
+final_cm <- confusionMatrix(
+  as.factor(final_predictions),
+  as.factor(final_actual),
+  positive = "1"
+)
+
+final_cm
+```
+
+
 
 ```{r save-results, include=FALSE}
 saveRDS(logit_model, "objects/logit_model.rds")
